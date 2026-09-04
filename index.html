@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mass Stacker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="sheet">
+    <aside class="rail">
+      <div class="brand">
+        <h1>MASS STACKER</h1>
+        <p class="meta">건물 정보를 읽고, 대화로 매스를 조절합니다.</p>
+      </div>
+
+      <section class="block">
+        <span class="tag">01 — 모델 연결</span>
+        <select id="provider" class="input">
+          <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+        </select>
+        <input id="modelName" class="input" placeholder="모델명 (.env 기본값 사용시 비워두기)" />
+        <p class="meta">API 키는 서버 .env(GEMINI_API_KEY / ANTHROPIC_API_KEY)에서 읽습니다.</p>
+      </section>
+
+      <section class="block">
+        <span class="tag">02 — 건물 정보</span>
+        <label class="meta" for="sampleSelect">예시 불러오기</label>
+        <select id="sampleSelect" class="input"></select>
+        <textarea id="siteJson" class="input mono" spellcheck="false" rows="8"></textarea>
+        <button id="generateBtn" class="btn primary">최대 규모 매스 생성</button>
+      </section>
+
+      <section class="block">
+        <span class="tag">03 — 빠른 요청</span>
+        <div class="quick-list" id="quickList"></div>
+      </section>
+    </aside>
+
+    <main class="stage">
+      <div class="viewport" id="viewport">
+        <div class="viewpresets">
+          <button class="vbtn" data-view="plan">평면 90°</button>
+          <button class="vbtn" data-view="bird">조감 60°</button>
+          <button class="vbtn" data-view="close">근경 28°</button>
+          <button class="vbtn" data-view="front">입면 0°</button>
+        </div>
+        <div class="empty-state" id="emptyState" hidden>
+          <p class="lead">왼쪽에 건물 정보를 넣고 "최대 규모 매스 생성"을 누르면<br />매스가 여기에 쌓입니다.</p>
+        </div>
+        <div class="layer-panel" id="layerPanel"></div>
+      </div>
+
+      <div class="titleblock" id="titleblock">
+        <div class="cell">
+          <span class="tag">대지면적</span>
+          <div class="val" data-v="siteArea">0<u>m²</u></div>
+          <div class="delta" data-d="siteArea"></div>
+        </div>
+        <div class="cell">
+          <span class="tag">건축면적</span>
+          <div class="val" data-v="buildArea">0<u>m²</u></div>
+          <div class="delta" data-d="buildArea"></div>
+        </div>
+        <div class="cell">
+          <span class="tag">건폐율</span>
+          <div class="val" data-v="bcr">0.0<u>%</u></div>
+          <div class="delta" data-d="bcr"></div>
+        </div>
+        <div class="cell">
+          <span class="tag">연면적</span>
+          <div class="val" data-v="gfa">0<u>m²</u></div>
+          <div class="delta" data-d="gfa"></div>
+        </div>
+        <div class="cell">
+          <span class="tag">용적률</span>
+          <div class="val" data-v="far">0.0<u>%</u></div>
+          <div class="delta" data-d="far"></div>
+        </div>
+        <div class="cell">
+          <span class="tag">최고높이</span>
+          <div class="val" data-v="height">0.0<u>m</u></div>
+          <div class="delta" data-d="height"></div>
+        </div>
+        <div class="cell">
+          <span class="tag">층수</span>
+          <div class="val" data-v="floorCount">0<u>F</u></div>
+          <div class="delta" data-d="floorCount"></div>
+        </div>
+        <div class="cell rev">
+          <span class="tag">REV</span>
+          <div class="val" data-v="rev">00</div>
+          <button id="undoBtn" class="btn small" disabled>되돌리기</button>
+        </div>
+      </div>
+    </main>
+
+    <aside class="chat">
+      <div class="chat-head">
+        <div>
+          <span class="tag">설계 대화</span>
+          <p class="meta">바꾸고 싶은 형태를 말로 설명하세요. 모델은 층별 변경 명령으로 답합니다.</p>
+        </div>
+        <button id="consoleToggle" class="btn small" type="button">콘솔</button>
+      </div>
+      <div class="log" id="chatLog"></div>
+      <form class="composer" id="composerForm">
+        <textarea id="chatInput" rows="2" placeholder="예: 3층부터는 대지를 꽉 채우고, 그 위로는 절반 크기로 후퇴시켜줘"></textarea>
+        <button id="chatSendBtn" class="btn primary" type="submit">보내기</button>
+      </form>
+    </aside>
+  </div>
+
+  <div class="console-panel" id="consolePanel" hidden>
+    <div class="console-head">
+      <span class="tag">LLM 콘솔 — 실제 요청/응답</span>
+      <div class="console-actions">
+        <button id="consoleClear" class="btn small" type="button">지우기</button>
+        <button id="consoleClose" class="btn small" type="button">닫기</button>
+      </div>
+    </div>
+    <div class="log console-log" id="consoleLog">
+      <p class="meta console-placeholder" style="padding:14px 0;">아직 호출 기록이 없습니다. 채팅으로 매스를 수정하면 실제 LLM API 요청/응답이 여기 표시됩니다.</p>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
