@@ -1,0 +1,205 @@
+{
+  "units": {
+    "area": "m²",
+    "height": "m",
+    "ratio": "%",
+    "coordinates": "EPSG:4326"
+  },
+  "examples": [
+    {
+      "name": "방배동 987-12 다세대 주거 필지",
+      "usage_category": "주거",
+      "address": "서울특별시 서초구 방배동 987-12",
+      "parcel_address": "서울특별시 서초구 방배동 987-12",
+      "pnu": "1165010100109870012",
+      "site_area": 438.1,
+      "site_area_basis": "VWorld 토지특성 단일 필지 면적; 건축물대장상 대지면적 아님",
+      "building_area": null,
+      "gross_floor_area": null,
+      "building_coverage_ratio": null,
+      "floor_area_ratio": null,
+      "building_height": null,
+      "floors": {
+        "above_ground": null,
+        "below_ground": null
+      },
+      "main_use": null,
+      "structure": null,
+      "zoning": "제2종일반주거지역",
+      "observed_land_use": "다세대",
+      "location": {
+        "latitude": 37.48022973181606,
+        "longitude": 127.00017856393563
+      },
+      "new_building_estimate": {
+        "status": "baseline_scenario_not_permit_verified",
+        "assumed_building_coverage_ratio": 60,
+        "assumed_floor_area_ratio": 200,
+        "max_building_area": 262.86,
+        "max_far_counted_floor_area": 876.2,
+        "max_total_gross_floor_area": null,
+        "max_building_height": null,
+        "max_floors": null,
+        "permit_verified_maximum": null,
+        "assumptions": [
+          "기존 앱 scale.ts의 용도지역별 기본 비율을 단일 필지 전체에 적용한 산술 시나리오",
+          "실제 건축대지 범위와 현행 개별 규제를 확인하지 않았으며 신축 가능 용도도 미확정",
+          "용적률 산정 연면적은 지하층 등을 포함한 전체 연면적과 다름"
+        ],
+        "unverified_constraints": [
+          "정비계획·지구단위계획 및 도시계획시설",
+          "건축선·도로 후퇴·기부채납",
+          "용도별 허용 여부 및 사업별 완화·강화",
+          "높이·일조·대지안의 공지",
+          "주차·피난·코어·구조 및 실제 배치"
+        ]
+      },
+      "data_quality": {
+        "land_status": "verified_api_response",
+        "building_status": "authentication_failed",
+        "building_error_code": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+        "null_meaning": "미확인; 건물 없음이나 0을 의미하지 않음",
+        "usage_note": "토지특성 이용현황은 다세대. 건축물대장 주용도와 동별 현황은 인증 오류로 미확인."
+      },
+      "sources": {
+        "queried_at": "2026-09-10T17:14:48+09:00",
+        "land_reference_year": 2026,
+        "land_updated_at": "2026-05-12",
+        "geocoding": "https://api.vworld.kr/req/address",
+        "land": "https://api.vworld.kr/ned/data/getLandCharacteristics",
+        "building": "https://www.data.go.kr/data/15134735/openapi.do",
+        "calculation": "2_next.js시연/demo-1h-app/app/scale.ts (저장소 기본 비율; 현행 적용률 검증 아님)"
+      }
+    },
+    {
+      "name": "강남파이낸스센터",
+      "usage_category": "업무",
+      "address": "서울특별시 강남구 테헤란로 152",
+      "parcel_address": "서울특별시 강남구 역삼동 737",
+      "pnu": "1168010100107370000",
+      "site_area": 13156.7,
+      "site_area_basis": "VWorld 토지특성 단일 필지 면적; 건축물대장상 대지면적 아님",
+      "building_area": null,
+      "gross_floor_area": null,
+      "building_coverage_ratio": null,
+      "floor_area_ratio": null,
+      "building_height": null,
+      "floors": {
+        "above_ground": null,
+        "below_ground": null
+      },
+      "main_use": null,
+      "structure": null,
+      "zoning": "일반상업지역",
+      "observed_land_use": "업무용",
+      "location": {
+        "latitude": 37.50002857167398,
+        "longitude": 127.03651446855193
+      },
+      "new_building_estimate": {
+        "status": "baseline_scenario_not_permit_verified",
+        "assumed_building_coverage_ratio": 60,
+        "assumed_floor_area_ratio": 800,
+        "max_building_area": 7894.02,
+        "max_far_counted_floor_area": 105253.6,
+        "max_total_gross_floor_area": null,
+        "max_building_height": null,
+        "max_floors": null,
+        "permit_verified_maximum": null,
+        "assumptions": [
+          "기존 앱 scale.ts의 용도지역별 기본 비율을 단일 필지 전체에 적용한 산술 시나리오",
+          "실제 건축대지 범위와 현행 개별 규제를 확인하지 않았으며 신축 가능 용도도 미확정",
+          "용적률 산정 연면적은 지하층 등을 포함한 전체 연면적과 다름"
+        ],
+        "unverified_constraints": [
+          "정비계획·지구단위계획 및 도시계획시설",
+          "건축선·도로 후퇴·기부채납",
+          "용도별 허용 여부 및 사업별 완화·강화",
+          "높이·일조·대지안의 공지",
+          "주차·피난·코어·구조 및 실제 배치"
+        ]
+      },
+      "data_quality": {
+        "land_status": "verified_api_response",
+        "building_status": "authentication_failed",
+        "building_error_code": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+        "null_meaning": "미확인; 건물 없음이나 0을 의미하지 않음"
+      },
+      "sources": {
+        "queried_at": "2026-09-10T17:10:23+09:00",
+        "land_reference_year": 2026,
+        "land_updated_at": "2026-05-12",
+        "geocoding": "https://api.vworld.kr/req/address",
+        "parcel": "https://api.vworld.kr/req/data",
+        "land": "https://api.vworld.kr/ned/data/getLandCharacteristics",
+        "building": "https://www.data.go.kr/data/15134735/openapi.do",
+        "calculation": "2_next.js시연/demo-1h-app/app/scale.ts (저장소 기본 비율; 현행 적용률 검증 아님)"
+      }
+    },
+    {
+      "name": "현대백화점 압구정본점",
+      "usage_category": "상업",
+      "address": "서울특별시 강남구 압구정로 165",
+      "parcel_address": "서울특별시 강남구 압구정동 429",
+      "pnu": "1168011000104290000",
+      "site_area": 6220.7,
+      "site_area_basis": "VWorld 토지특성 단일 필지 면적; 건축물대장상 대지면적 아님",
+      "building_area": null,
+      "gross_floor_area": null,
+      "building_coverage_ratio": null,
+      "floor_area_ratio": null,
+      "building_height": null,
+      "floors": {
+        "above_ground": null,
+        "below_ground": null
+      },
+      "main_use": null,
+      "structure": null,
+      "zoning": "제3종일반주거지역",
+      "observed_land_use": "상업용",
+      "location": {
+        "latitude": 37.527374968528775,
+        "longitude": 127.02746200266773
+      },
+      "new_building_estimate": {
+        "status": "baseline_scenario_not_permit_verified",
+        "assumed_building_coverage_ratio": 50,
+        "assumed_floor_area_ratio": 250,
+        "max_building_area": 3110.35,
+        "max_far_counted_floor_area": 15551.75,
+        "max_total_gross_floor_area": null,
+        "max_building_height": null,
+        "max_floors": null,
+        "permit_verified_maximum": null,
+        "assumptions": [
+          "기존 앱 scale.ts의 용도지역별 기본 비율을 단일 필지 전체에 적용한 산술 시나리오",
+          "실제 건축대지 범위와 현행 개별 규제를 확인하지 않았으며 신축 가능 용도도 미확정",
+          "용적률 산정 연면적은 지하층 등을 포함한 전체 연면적과 다름"
+        ],
+        "unverified_constraints": [
+          "정비계획·지구단위계획 및 도시계획시설",
+          "건축선·도로 후퇴·기부채납",
+          "용도별 허용 여부 및 사업별 완화·강화",
+          "높이·일조·대지안의 공지",
+          "주차·피난·코어·구조 및 실제 배치"
+        ]
+      },
+      "data_quality": {
+        "land_status": "verified_api_response",
+        "building_status": "authentication_failed",
+        "building_error_code": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+        "null_meaning": "미확인; 건물 없음이나 0을 의미하지 않음"
+      },
+      "sources": {
+        "queried_at": "2026-09-10T17:10:23+09:00",
+        "land_reference_year": 2026,
+        "land_updated_at": "2026-05-12",
+        "geocoding": "https://api.vworld.kr/req/address",
+        "parcel": "https://api.vworld.kr/req/data",
+        "land": "https://api.vworld.kr/ned/data/getLandCharacteristics",
+        "building": "https://www.data.go.kr/data/15134735/openapi.do",
+        "calculation": "2_next.js시연/demo-1h-app/app/scale.ts (저장소 기본 비율; 현행 적용률 검증 아님)"
+      }
+    }
+  ]
+}

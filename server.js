@@ -102,6 +102,7 @@ const EDIT_SYS = `너는 건축 기획설계를 돕는 Massing Planner다.
 - "지상층을 추가/증축해줘"는 add_floors, "지하층/지하주차장/지하 몇 층을 추가해줘"는 반드시 add_basement를 쓴다. add_floors는 항상 현재 최상층 위에, add_basement는 항상 현재 최하 지하층 아래에 붙는다 — 다른 위치에 끼워 넣을 수 없다.
 - add_floors/add_basement의 floorStart·floorEnd는 실제 층 번호가 아니라 "몇 개 층을 추가하는지"를 나타내는 용도로만 쓰인다(예: 1개 추가 → floorStart=1,floorEnd=1 / 3개 추가 → floorStart=1,floorEnd=3). 실제 층 번호는 클라이언트가 자동으로 이어 붙인다.
 - delete_floors는 지상층이면 최상층부터, 지하층이면 가장 깊은 지하층부터 연속으로만 지운다.
+- 사용자가 입력한 층수 상한과 최고 높이 상한(아래 "참고")은 반드시 지켜라. 요청대로 하면 이를 넘는다면 상한 안에서 가능한 만큼만 반영하고, 그 사실을 interpretation에 적어라. 상한이 "제한없음"이면 층수·높이에 제한을 두지 마라.
 - 면적·건폐율·용적률·초과 여부는 계산하지 마라. 형태만 결정한다 — 그 값들은 클라이언트가 매스 형상에서 자동으로 계산해 화면에 보여준다(용적률·건폐율은 지상층 기준으로 계산되고 지하층은 별도로 집계된다).
 
 건축 용어 해석:
@@ -122,11 +123,12 @@ const EDIT_SYS = `너는 건축 기획설계를 돕는 Massing Planner다.
 function buildPrompt(spec, instruction) {
   return `${EDIT_SYS}
 
-참고(법규 상한 — 계산하지 말고 참고만 하라):
+참고(법규·사용자 입력 상한 — 면적은 계산하지 말고 참고만 하라):${spec.site.name ? `\n- 대지: ${spec.site.name}${spec.site.zoning ? ` (${spec.site.zoning})` : ''}` : ''}
 - 대지면적: ${spec.site.siteArea} ㎡
 - 건폐율 상한: ${spec.site.coverageRatio}% (최대 건축면적 ${spec.derived.maxBuildingArea} ㎡)
 - 용적률 상한: ${spec.site.farRatio}% (최대 연면적 ${spec.derived.maxFloorArea} ㎡)
 - 층수 상한: ${spec.site.maxFloors ?? '제한없음'}
+- 최고 높이 상한(지상층 층고 합): ${spec.site.maxHeight != null ? spec.site.maxHeight + ' m' : '제한없음'}
 
 현재 매스:
 ${currentModelText(spec)}

@@ -27,11 +27,29 @@
       </section>
 
       <section class="block">
-        <span class="tag">02 — 건물 정보</span>
-        <label class="meta" for="sampleSelect">예시 불러오기</label>
+        <span class="tag">02 — 대지 조건</span>
+        <label class="field-label" for="sampleSelect">대지 예시 선택</label>
         <select id="sampleSelect" class="input"></select>
-        <textarea id="siteJson" class="input mono" spellcheck="false" rows="8"></textarea>
-        <button id="generateBtn" class="btn primary">최대 규모 매스 생성</button>
+
+        <div class="site-form" id="siteForm">
+          <label class="field" for="f_siteArea"><span>대지면적</span><input id="f_siteArea" class="input" type="number" inputmode="decimal" min="0" step="0.1" /><em>㎡</em></label>
+          <label class="field" for="f_coverageRatio"><span>건폐율</span><input id="f_coverageRatio" class="input" type="number" inputmode="decimal" min="0" max="100" step="1" /><em>%</em></label>
+          <label class="field" for="f_farRatio"><span>용적률</span><input id="f_farRatio" class="input" type="number" inputmode="decimal" min="0" step="10" /><em>%</em></label>
+          <label class="field" for="f_maxFloors"><span>최대 층수</span><input id="f_maxFloors" class="input" type="number" inputmode="numeric" min="1" step="1" placeholder="제한 없음" /><em>층</em></label>
+          <label class="field" for="f_maxHeight"><span>최고 높이</span><input id="f_maxHeight" class="input" type="number" inputmode="decimal" min="0" step="0.5" placeholder="제한 없음" /><em>m</em></label>
+          <label class="field" for="f_floorHeight"><span>층고</span><input id="f_floorHeight" class="input" type="number" inputmode="decimal" min="2" max="14" step="0.1" /><em>m</em></label>
+        </div>
+        <p class="site-derived" id="siteDerived" aria-live="polite"></p>
+        <div class="field-error" id="siteError" role="alert" hidden></div>
+        <button id="generateBtn" class="btn primary">이 조건으로 매스 생성</button>
+        <div class="site-card" id="siteCard" hidden></div>
+
+        <details class="json-adv">
+          <summary>고급 — JSON으로 직접 편집</summary>
+          <textarea id="siteJson" class="input mono" spellcheck="false" rows="8" aria-label="대지 조건 JSON"></textarea>
+        </details>
+        <button id="compareBtn" class="btn" type="button" disabled>대안 3가지 비교</button>
+        <p class="meta">현재 설계의 대지 조건으로 균형형 · 테라스형 · 포디움+타워형을 만들어 나란히 비교합니다.</p>
       </section>
 
       <section class="block">
@@ -52,6 +70,44 @@
           <p class="lead">왼쪽에 건물 정보를 넣고 "최대 규모 매스 생성"을 누르면<br />매스가 여기에 쌓입니다.</p>
         </div>
         <div class="layer-panel" id="layerPanel"></div>
+        <section class="floor-editor" id="floorEditor" aria-label="선택한 층 편집" hidden>
+          <div class="fe-head">
+            <span class="fe-title" id="feTitle">3F</span>
+            <button id="feClose" class="btn small" type="button" title="선택 해제 (Esc)">선택 해제</button>
+          </div>
+          <div class="fe-grid">
+            <label class="field" for="fe_width"><span>폭 (동서)</span><input id="fe_width" class="input" type="number" step="0.1" min="0.5" inputmode="decimal" /><em>m</em></label>
+            <label class="field" for="fe_depth"><span>깊이 (남북)</span><input id="fe_depth" class="input" type="number" step="0.1" min="0.5" inputmode="decimal" /><em>m</em></label>
+            <label class="field" for="fe_height"><span>층고</span><input id="fe_height" class="input" type="number" step="0.1" min="2" max="14" inputmode="decimal" /><em>m</em></label>
+            <label class="field" for="fe_offsetX"><span>위치 X (동+)</span><input id="fe_offsetX" class="input" type="number" step="0.5" inputmode="decimal" /><em>m</em></label>
+            <label class="field" for="fe_offsetZ"><span>위치 Z (남+)</span><input id="fe_offsetZ" class="input" type="number" step="0.5" inputmode="decimal" /><em>m</em></label>
+            <div class="fe-area"><span>바닥면적</span><b id="feArea">0㎡</b></div>
+          </div>
+          <p class="fe-error" id="feError" role="alert" hidden></p>
+          <div class="fe-warn" id="feWarn" hidden></div>
+          <p class="fe-hint">3D에서 이 층의 <b>옆면</b>을 끌면 폭·깊이, <b>윗면</b>을 끌면 층고가 바뀝니다(반대쪽 면은 고정). 0.1m 단위, Shift를 누르면 1m 단위.</p>
+        </section>
+        <div class="drag-label" id="dragLabel" hidden></div>
+        <section class="preview-panel" id="previewPanel" aria-label="AI 수정안 미리보기" hidden>
+          <div class="preview-head">
+            <span class="tag" id="previewTitle">AI 수정안 미리보기 · 아직 적용 전</span>
+            <div class="legend">
+              <span class="lg ghost">원본</span>
+              <span class="lg prop">수정안</span>
+              <span class="lg touched">바뀌는 층</span>
+            </div>
+          </div>
+          <div class="preview-warnings" id="previewWarnings" role="alert" hidden></div>
+          <div class="preview-body">
+            <div class="preview-floors" id="previewFloors"></div>
+            <table class="preview-totals" id="previewTotals"></table>
+          </div>
+          <div class="preview-actions">
+            <p class="meta">적용을 눌러야 현재 설계와 이력이 바뀝니다. 오른쪽 채팅으로 추가 요청하면 원래 설계 기준으로 다시 계산합니다.</p>
+            <button id="previewCancel" class="btn" type="button">취소</button>
+            <button id="previewApply" class="btn primary" type="button">적용</button>
+          </div>
+        </section>
       </div>
 
       <div class="titleblock" id="titleblock">
@@ -112,6 +168,18 @@
         <button id="chatSendBtn" class="btn primary" type="submit">보내기</button>
       </form>
     </aside>
+  </div>
+
+  <div class="compare-overlay" id="compareOverlay" role="dialog" aria-modal="true" aria-labelledby="compareTitle" hidden>
+    <div class="compare-head">
+      <div>
+        <span class="tag" id="compareTitle">대안 비교 — 같은 대지 조건</span>
+        <p class="compare-site" id="compareSite"></p>
+      </div>
+      <button id="compareClose" class="btn small" type="button">닫기</button>
+    </div>
+    <p class="meta compare-hint">한 화면을 드래그하면 세 안이 같은 각도로 함께 돌아갑니다. 마음에 드는 안의 "이 안 채택"을 누르면 현재 설계가 됩니다(되돌리기 가능).</p>
+    <div class="compare-grid" id="compareGrid"></div>
   </div>
 
   <div class="console-panel" id="consolePanel" hidden>
