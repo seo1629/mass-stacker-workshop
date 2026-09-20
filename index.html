@@ -173,26 +173,6 @@
         <div class="drag-label" id="dragLabel" hidden></div>
         <p class="edit-hint" id="editHint" hidden></p>
 
-        <section class="preview-panel" id="previewPanel" aria-label="AI 수정안 미리보기" hidden>
-          <div class="preview-head">
-            <span class="tag" id="previewTitle">AI 수정안 미리보기 · 아직 적용 전</span>
-            <div class="legend">
-              <span class="lg ghost">원본</span>
-              <span class="lg prop">수정안</span>
-              <span class="lg touched">바뀌는 층</span>
-            </div>
-          </div>
-          <div class="preview-warnings" id="previewWarnings" role="alert" hidden></div>
-          <div class="preview-body">
-            <div class="preview-floors" id="previewFloors"></div>
-            <table class="preview-totals" id="previewTotals"></table>
-          </div>
-          <div class="preview-actions">
-            <p class="meta">적용을 눌러야 현재 설계와 이력이 바뀝니다. 오른쪽 채팅으로 추가 요청하면 원래 설계 기준으로 다시 계산합니다.</p>
-            <button id="previewCancel" class="btn" type="button">취소</button>
-            <button id="previewApply" class="btn primary" type="button">적용</button>
-          </div>
-        </section>
       </div>
 
       <div class="titleblock" id="titleblock">
@@ -237,6 +217,26 @@
           <button id="undoBtn" class="btn small" disabled>되돌리기</button>
         </div>
       </div>
+      <section class="preview-panel" id="previewPanel" aria-label="AI 수정안 미리보기" hidden>
+        <div class="preview-head">
+          <span class="tag" id="previewTitle">AI 수정안 미리보기 · 아직 적용 전</span>
+          <div class="legend">
+            <span class="lg ghost">원본</span>
+            <span class="lg prop">수정안</span>
+            <span class="lg touched">바뀌는 층</span>
+          </div>
+        </div>
+        <div class="preview-warnings" id="previewWarnings" role="alert" hidden></div>
+        <div class="preview-body">
+          <div class="preview-floors" id="previewFloors"></div>
+          <table class="preview-totals" id="previewTotals"></table>
+        </div>
+        <div class="preview-actions">
+          <p class="meta">적용을 눌러야 현재 설계와 이력이 바뀝니다. 오른쪽 채팅으로 추가 요청하면 원래 설계 기준으로 다시 계산합니다.</p>
+          <button id="previewCancel" class="btn" type="button">취소</button>
+          <button id="previewApply" class="btn primary" type="button">적용</button>
+        </div>
+      </section>
     </main>
 
     <aside class="chat">
@@ -245,13 +245,16 @@
           <span class="tag">설계 대화</span>
           <p class="meta">바꾸고 싶은 형태를 말로 설명하세요. 모델은 층별 변경 명령으로 답합니다.</p>
         </div>
-        <button id="consoleToggle" class="btn small" type="button">콘솔</button>
+        <div class="chat-head-actions">
+          <button id="chatCollapse" class="btn small" type="button" aria-expanded="true" title="대화 내용을 접고 입력창만 남깁니다">대화 접기</button>
+          <button id="consoleToggle" class="btn small" type="button">콘솔</button>
+        </div>
       </div>
       <div class="log" id="chatLog"></div>
-      <div class="chat-quick">
-        <span class="tag">빠른 요청</span>
+      <details class="chat-quick" id="chatQuick">
+        <summary><span class="tag">빠른 요청</span></summary>
         <div class="quick-list" id="quickList"></div>
-      </div>
+      </details>
       <form class="composer" id="composerForm">
         <textarea id="chatInput" rows="2" placeholder="예: 3층부터는 대지를 꽉 채우고, 그 위로는 절반 크기로 후퇴시켜줘"></textarea>
         <button id="chatSendBtn" class="btn primary" type="submit">보내기</button>

@@ -18,6 +18,7 @@ const undoBtn = el('undoBtn');
 const chatLog = el('chatLog');
 const chatInput = el('chatInput');
 const chatSendBtn = el('chatSendBtn');
+const chatCollapse = el('chatCollapse');
 const composerForm = el('composerForm');
 const quickList = el('quickList');
 const emptyState = el('emptyState');
@@ -1602,10 +1603,32 @@ composerForm.addEventListener('submit', (e) => {
   sendChat(instruction);
 });
 chatInput.addEventListener('keydown', (e) => {
+  // 한글 등 조합 중(IME)에 누른 Enter는 글자를 확정하는 키다. 그때 보내면 조합 중인 글자가 잘려 나간다.
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
+    if (busy) return; // 응답을 기다리는 동안 Enter를 연타해도 중복 요청하지 않는다
     composerForm.requestSubmit();
   }
+});
+
+// 대화 접기/펼치기 — 기록이 길어도 입력창을 바로 쓸 수 있게 한다.
+chatCollapse.addEventListener('click', () => {
+  const chat = chatCollapse.closest('.chat');
+  const collapsed = chat.classList.toggle('collapsed');
+  chatCollapse.textContent = collapsed ? '대화 펼치기' : '대화 접기';
+  chatCollapse.setAttribute('aria-expanded', String(!collapsed));
+  if (!collapsed) chatLog.scrollTop = chatLog.scrollHeight;
+});
+
+// 오류 메시지의 "다시 시도" — 설계는 그대로 두고 같은 요청을 다시 보낸다.
+chatLog.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-retry]');
+  if (!btn || busy) return;
+  const instruction = btn.dataset.retry;
+  btn.closest('.msg')?.remove();
+  chatEntries = chatEntries.filter((m) => !m.html.includes(`data-retry="${escapeHtml(instruction)}"`));
+  sendChat(instruction, { retry: true });
 });
 
 undoBtn.addEventListener('click', () => {
@@ -1621,9 +1644,10 @@ undoBtn.addEventListener('click', () => {
   saveDesign();
 });
 
-async function sendChat(instructionArg) {
+async function sendChat(instructionArg, { retry = false } = {}) {
   const instruction = instructionArg ?? chatInput.value.trim();
   if (!instruction || !currentSpec || busy) return;
+  if (retry) appendMessage('system', escapeHtml('같은 요청을 다시 보냅니다.'), null, { persist: false });
 
   // 검토 중인 수정안이 있으면 "추가 요청"으로 처리한다. 수정안 위에 또 쌓지 않고,
   // 원래 설계(currentSpec)에 지금까지의 요청을 모두 합쳐 다시 보내 새 수정안을 만든다.
@@ -1664,7 +1688,13 @@ async function sendChat(instructionArg) {
     showPreview({ floors: nextFloors, touched, diff, interpretation: result.interpretation || '', instructions });
   } catch (e) {
     pending.remove();
-    appendMessage('error', escapeHtml(e.message) + (refining ? '<br>검토 중인 수정안은 그대로 남아 있습니다.' : ''));
+    // 오류가 나도 현재 설계는 건드리지 않는다. 같은 요청을 한 번에 다시 보낼 수 있게 버튼을 붙인다.
+    appendMessage(
+      'error',
+      escapeHtml(e.message) +
+        `<br>현재 설계는 그대로 두었습니다.${refining ? ' 검토 중인 수정안도 남아 있습니다.' : ''}` +
+        `<br><button type="button" class="retry-btn" data-retry="${escapeHtml(instruction)}">같은 요청 다시 시도</button>`
+    );
   } finally {
     setBusy(false);
     saveDesign();
