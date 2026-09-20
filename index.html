@@ -23,11 +23,67 @@
           <option value="anthropic">Anthropic (Claude)</option>
         </select>
         <input id="modelName" class="input" placeholder="모델명 (.env 기본값 사용시 비워두기)" />
-        <p class="meta">API 키는 서버 .env(GEMINI_API_KEY / ANTHROPIC_API_KEY)에서 읽습니다.</p>
+        <p class="meta">서버 .env 키를 먼저 씁니다. 키가 없거나 인증에 실패하면 아래에 입력한 키로 다시 시도합니다.</p>
+
+        <details class="key-box" id="keyBox">
+          <summary>API 키 직접 입력 <span class="key-scope">이 탭에서만 유지</span></summary>
+          <div class="key-group">
+            <span class="tag">AI 모델 — 매스 수정에 사용</span>
+            <div class="key-row" data-key="gemini">
+              <label for="key_gemini">Gemini <span class="key-env" data-env></span></label>
+              <div class="key-line">
+                <input id="key_gemini" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…" />
+                <button class="btn small" type="button" data-act="save">저장</button>
+              </div>
+              <p class="key-state" data-state></p>
+            </div>
+            <div class="key-row" data-key="anthropic">
+              <label for="key_anthropic">Claude <span class="key-env" data-env></span></label>
+              <div class="key-line">
+                <input id="key_anthropic" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" />
+                <button class="btn small" type="button" data-act="save">저장</button>
+              </div>
+              <p class="key-state" data-state></p>
+            </div>
+          </div>
+          <div class="key-group">
+            <span class="tag">대지 데이터 — 실제 대지 조회용</span>
+            <div class="key-row" data-key="vworld">
+              <label for="key_vworld">VWorld <span class="key-env" data-env></span></label>
+              <div class="key-line">
+                <input id="key_vworld" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="VWorld 인증키" />
+                <button class="btn small" type="button" data-act="save">저장</button>
+              </div>
+              <p class="key-state" data-state></p>
+            </div>
+            <div class="key-row" data-key="datagokr">
+              <label for="key_datagokr">공공데이터포털 <span class="key-env" data-env></span></label>
+              <div class="key-line">
+                <input id="key_datagokr" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="서비스 키 (Decoding)" />
+                <button class="btn small" type="button" data-act="save">저장</button>
+              </div>
+              <p class="key-state" data-state></p>
+            </div>
+            <p class="meta">대지 데이터 키는 지금은 "연결 확인"에만 씁니다. 현재 실제 대지 정보는 real-site-examples.json에서 읽습니다.</p>
+          </div>
+          <p class="meta">키는 이 탭에만 저장되고(탭을 닫으면 사라짐), 화면과 기록에는 가려서 표시됩니다.</p>
+        </details>
       </section>
 
       <section class="block">
-        <span class="tag">02 — 대지 조건</span>
+        <span class="tag">02 — 대지 찾기 (주소)</span>
+        <div class="search-line">
+          <input id="landQuery" class="input" placeholder="예: 서울 서초구 방배동 987-12" autocomplete="off" />
+          <button id="landSearchBtn" class="btn" type="button">검색</button>
+        </div>
+        <div class="search-results" id="landResults" hidden></div>
+        <div class="land-info" id="landInfo" hidden></div>
+        <div class="source-list" id="landSources" hidden></div>
+        <button id="landApplyBtn" class="btn primary" type="button" hidden>이 대지 경계·조건으로 초기 매스 만들기</button>
+      </section>
+
+      <section class="block">
+        <span class="tag">03 — 대지 조건</span>
         <label class="field-label" for="sampleSelect">대지 예시 선택</label>
         <select id="sampleSelect" class="input"></select>
 
@@ -38,6 +94,16 @@
           <label class="field" for="f_maxFloors"><span>최대 층수</span><input id="f_maxFloors" class="input" type="number" inputmode="numeric" min="1" step="1" placeholder="제한 없음" /><em>층</em></label>
           <label class="field" for="f_maxHeight"><span>최고 높이</span><input id="f_maxHeight" class="input" type="number" inputmode="decimal" min="0" step="0.5" placeholder="제한 없음" /><em>m</em></label>
           <label class="field" for="f_floorHeight"><span>층고</span><input id="f_floorHeight" class="input" type="number" inputmode="decimal" min="2" max="14" step="0.1" /><em>m</em></label>
+          <label class="field" for="f_setback"><span>경계 이격</span><input id="f_setback" class="input" type="number" inputmode="decimal" min="0" max="20" step="0.1" placeholder="1.0" /><em>m</em></label>
+        </div>
+        <div class="sun-row" id="sunRow">
+          <span class="field-label">정북 일조 사선</span>
+          <div class="sun-buttons">
+            <button type="button" class="sun-btn" data-sun="after">10m 기준 (2023~)</button>
+            <button type="button" class="sun-btn" data-sun="before">9m 기준 (개정 전)</button>
+            <button type="button" class="sun-btn" data-sun="off">적용 안 함</button>
+          </div>
+          <p class="meta" id="sunNote"></p>
         </div>
         <p class="site-derived" id="siteDerived" aria-live="polite"></p>
         <div class="field-error" id="siteError" role="alert" hidden></div>
@@ -53,7 +119,7 @@
       </section>
 
       <section class="block">
-        <span class="tag">03 — 빠른 요청</span>
+        <span class="tag">04 — 빠른 요청</span>
         <div class="quick-list" id="quickList"></div>
       </section>
     </aside>
@@ -65,6 +131,7 @@
           <button class="vbtn" data-view="bird">조감 60°</button>
           <button class="vbtn" data-view="close">근경 28°</button>
           <button class="vbtn" data-view="front">입면 0°</button>
+          <button id="neighborsBtn" class="vbtn on" type="button" hidden>주변 건물 끄기</button>
         </div>
         <div class="empty-state" id="emptyState" hidden>
           <p class="lead">왼쪽에 건물 정보를 넣고 "최대 규모 매스 생성"을 누르면<br />매스가 여기에 쌓입니다.</p>
@@ -88,6 +155,18 @@
           <p class="fe-hint">3D에서 이 층의 <b>옆면</b>을 끌면 폭·깊이, <b>윗면</b>을 끌면 층고가 바뀝니다(반대쪽 면은 고정). 0.1m 단위, Shift를 누르면 1m 단위.</p>
         </section>
         <div class="drag-label" id="dragLabel" hidden></div>
+        <section class="minimap" id="minimap" hidden>
+          <div class="mm-head">
+            <span class="tag">지적도</span>
+            <button id="mmToggle" class="btn small" type="button">접기</button>
+          </div>
+          <div class="mm-body" id="mmBody">
+            <img id="mmImage" alt="선택한 대지 주변 지적도" />
+            <svg id="mmOverlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <p class="mm-fail" id="mmFail" hidden></p>
+          </div>
+          <p class="mm-caption" id="mmCaption"></p>
+        </section>
         <section class="preview-panel" id="previewPanel" aria-label="AI 수정안 미리보기" hidden>
           <div class="preview-head">
             <span class="tag" id="previewTitle">AI 수정안 미리보기 · 아직 적용 전</span>
@@ -199,6 +278,7 @@
   {
     "imports": {
       "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "clipper-lib": "https://cdn.jsdelivr.net/npm/clipper-lib@6.4.2/+esm",
       "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
     }
   }

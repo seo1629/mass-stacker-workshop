@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SAMPLES } from './samples.js';
+import { searchLand, loadParcel, cadastralMapUrl, ringToLocal, polygonArea, centroid, bbox as ringBBox, minAreaRect, toLocal } from './land.js';
+import {
+  buildPolygonFloors, polyArea, polyBBox, polyCentroid, scalePoly, translatePoly, rotatePoly,
+  setbackAt, SUNLIGHT_BASE
+} from './mass-poly.js';
 
 const el = (id) => document.getElementById(id);
 const providerSelect = el('provider');
@@ -44,6 +49,19 @@ const feWarn = el('feWarn');
 const feClose = el('feClose');
 const dragLabel = el('dragLabel');
 const FE_FIELDS = ['width', 'depth', 'height', 'offsetX', 'offsetZ'];
+const landQuery = el('landQuery');
+const landSearchBtn = el('landSearchBtn');
+const landResults = el('landResults');
+const landInfo = el('landInfo');
+const landSources = el('landSources');
+const landApplyBtn = el('landApplyBtn');
+const minimap = el('minimap');
+const mmImage = el('mmImage');
+const mmOverlay = el('mmOverlay');
+const mmFail = el('mmFail');
+const mmCaption = el('mmCaption');
+const mmToggle = el('mmToggle');
+const neighborsBtn = el('neighborsBtn');
 
 // ---- LLM 콘솔: 실제로 LLM API에 보낸 요청/받은 응답을 그대로 보여준다 ----
 consoleToggle.addEventListener('click', () => {
@@ -100,10 +118,149 @@ modelInput.addEventListener('change', () => {
   localStorage.setItem(`model_${providerSelect.value}`, modelInput.value);
 });
 
+// ---- API 키 직접 입력 ----
+// 서버 .env 키를 먼저 쓰고, 없거나 인증에 실패하면 여기 입력한 키로 다시 시도한다(재시도는 서버가 한다).
+// 키는 sessionStorage에만 두므로 이 탭에서만 유지되고 탭을 닫으면 사라진다. 화면에는 항상 가려서 표시한다.
+const KEY_STORAGE = 'mass_stacker_keys_v1';
+const KEY_KINDS = {
+  gemini: { label: 'Gemini', hint: 'Google AI Studio' },
+  anthropic: { label: 'Claude', hint: 'Anthropic Console' },
+  vworld: { label: 'VWorld', hint: 'VWorld 인증키' },
+  datagokr: { label: '공공데이터포털', hint: '서비스 키' }
+};
+let userKeys = {};
+let envKeys = {};
+
+function loadUserKeys() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(KEY_STORAGE));
+    return saved && typeof saved === 'object' ? saved : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveUserKeys() {
+  try {
+    sessionStorage.setItem(KEY_STORAGE, JSON.stringify(userKeys));
+  } catch (e) {
+    console.warn('키 저장 실패(이 탭에서만 유지됩니다):', e);
+  }
+}
+
+// 앞 4글자와 뒤 3글자만 남기고 가린다.
+function maskKey(k) {
+  if (!k) return '';
+  if (k.length <= 10) return '•'.repeat(k.length);
+  return `${k.slice(0, 4)}${'•'.repeat(8)}${k.slice(-3)}`;
+}
+
+function keyRow(kind) {
+  return document.querySelector(`.key-row[data-key="${kind}"]`);
+}
+
+function renderKeyRow(kind, status) {
+  const row = keyRow(kind);
+  if (!row) return;
+  const envBadge = row.querySelector('[data-env]');
+  envBadge.textContent = envKeys[kind] ? '.env 있음' : '.env 없음';
+  envBadge.classList.toggle('on', !!envKeys[kind]);
+
+  const state = row.querySelector('[data-state]');
+  state.className = 'key-state';
+  if (status) {
+    state.classList.add(status.ok ? 'ok' : 'bad');
+    state.innerHTML =
+      escapeHtml(status.message) +
+      (status.detail ? `<details class="key-detail"><summary>응답 원문 보기</summary>${escapeHtml(status.detail)}</details>` : '');
+    return;
+  }
+  if (userKeys[kind]) {
+    state.innerHTML =
+      `입력한 키 <span class="masked">${escapeHtml(maskKey(userKeys[kind]))}</span> 저장됨 (이 탭에서만)` +
+      '<button type="button" data-act="test">연결 확인</button><button type="button" data-act="clear">지우기</button>';
+  } else {
+    state.textContent = envKeys[kind]
+      ? '.env 키를 씁니다. 인증에 실패하면 여기 입력한 키로 다시 시도합니다.'
+      : '.env 키가 없습니다. 키를 입력해 주세요.';
+  }
+}
+
+function renderKeyRows() {
+  Object.keys(KEY_KINDS).forEach((kind) => renderKeyRow(kind));
+}
+
+async function testUserKey(kind) {
+  const key = userKeys[kind];
+  if (!key) return;
+  renderKeyRow(kind, { ok: true, message: '확인 중...' });
+  try {
+    const r = await fetch('/api/keys/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: kind, key })
+    });
+    const data = await r.json();
+    renderKeyRow(kind, {
+      ok: !!data.ok,
+      message: data.message || (data.ok ? '확인되었습니다.' : '확인 실패'),
+      detail: data.detail
+    });
+  } catch (e) {
+    renderKeyRow(kind, { ok: false, message: `확인 중 오류: ${e.message}` });
+  }
+  setTimeout(() => renderKeyRow(kind), 20000);
+}
+
+document.getElementById('keyBox').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const row = btn.closest('.key-row');
+  const kind = row.dataset.key;
+  const input = row.querySelector('input');
+  if (btn.dataset.act === 'save') {
+    const v = input.value.trim();
+    if (!v) {
+      renderKeyRow(kind, { ok: false, message: '키를 입력한 뒤 저장을 눌러 주세요.' });
+      return;
+    }
+    userKeys[kind] = v;
+    input.value = '';
+    saveUserKeys();
+    renderKeyRow(kind);
+  } else if (btn.dataset.act === 'clear') {
+    delete userKeys[kind];
+    saveUserKeys();
+    renderKeyRow(kind);
+  } else if (btn.dataset.act === 'test') {
+    testUserKey(kind);
+  }
+});
+
+document.querySelectorAll('.key-row input').forEach((input) => {
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    input.closest('.key-row').querySelector('[data-act="save"]').click();
+  });
+});
+
+userKeys = loadUserKeys();
+renderKeyRows();
+fetch('/api/keys/status')
+  .then((r) => r.json())
+  .then((data) => {
+    envKeys = data || {};
+    renderKeyRows();
+  })
+  .catch(() => renderKeyRows());
+
 // ---- 대지 조건 입력: 예시 선택 + 숫자 입력칸(폼) + 고급 JSON (셋은 항상 같은 값으로 동기화) ----
 const siteCard = el('siteCard');
 const siteDerived = el('siteDerived');
-const SITE_FIELDS = ['siteArea', 'coverageRatio', 'farRatio', 'maxFloors', 'maxHeight', 'floorHeight'];
+const SITE_FIELDS = ['siteArea', 'coverageRatio', 'farRatio', 'maxFloors', 'maxHeight', 'floorHeight', 'setback'];
+const sunRow = el('sunRow');
+const sunNote = el('sunNote');
 const fieldInput = (key) => el(`f_${key}`);
 let siteExtras = {}; // 폼에 없는 값(name, zoning, address, siteWidth, siteDepth 등)은 그대로 보존한다
 let realSites = []; // real-site-examples.json에서 불러온 실제 대지 예시
@@ -136,14 +293,43 @@ function readForm() {
     if (raw === '') delete site[key];
     else site[key] = Number(raw);
   });
+  site.sunRule = currentSunRule;
   return site;
 }
+
+// 정북 일조 기준: 'after' 10m(2023년 개정) / 'before' 9m / 'off' 적용 안 함
+let currentSunRule = 'after';
+function setSunRuleButtons(rule) {
+  currentSunRule = rule;
+  sunRow.querySelectorAll('.sun-btn').forEach((b) => b.classList.toggle('on', b.dataset.sun === rule));
+}
+
+function setSunRule(rule, { regenerate = false } = {}) {
+  currentSunRule = rule;
+  sunRow.querySelectorAll('.sun-btn').forEach((b) => b.classList.toggle('on', b.dataset.sun === rule));
+  sunNote.textContent =
+    rule === 'off'
+      ? '일조 사선을 적용하지 않습니다(참고용).'
+      : `정북 인접대지경계선에서 높이 ${SUNLIGHT_BASE[rule]}m 이하는 1.5m, 초과분은 그 높이의 1/2 이상 이격합니다.`;
+  const site = readForm();
+  siteJsonInput.value = JSON.stringify(site, null, 2);
+  updateSiteSummary(site);
+  if (regenerate && !generateBtn.disabled && currentSpec?.site?.boundary?.length) generateBtn.click();
+}
+
+sunRow.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-sun]');
+  if (btn) setSunRule(btn.dataset.sun, { regenerate: true });
+});
+setSunRuleButtons('after');
+sunNote.textContent = `정북 인접대지경계선에서 높이 ${SUNLIGHT_BASE.after}m 이하는 1.5m, 초과분은 그 높이의 1/2 이상 이격합니다.`;
 
 function fillForm(site) {
   siteExtras = {};
   Object.keys(site).forEach((k) => {
     if (!SITE_FIELDS.includes(k)) siteExtras[k] = site[k];
   });
+  if (site.sunRule) setSunRuleButtons(site.sunRule);
   SITE_FIELDS.forEach((key) => {
     fieldInput(key).value = isSet(site[key]) ? site[key] : '';
   });
@@ -168,10 +354,15 @@ function updateSiteSummary(site) {
     const v = computeValues(site, spec.floors);
     const used = spec.derived.maxFloorArea ? (v.gfa / spec.derived.maxFloorArea) * 100 : 0;
     siteDerived.classList.remove('bad');
+    const bd = spec.derived.buildable;
     siteDerived.innerHTML =
       `최대 건축면적 <b>${fmt(spec.derived.maxBuildingArea, 1)}㎡</b> · 최대 연면적 <b>${fmt(spec.derived.maxFloorArea, 1)}㎡</b><br>` +
-      `생성하면 약 <b>${v.floorCount}층</b> · 높이 <b>${fmt(v.height, 1)}m</b>` +
-      (used < 99 ? `<br><span class="warn">층수·높이 조건 때문에 최대 연면적의 ${fmt(used, 0)}%만 쓸 수 있습니다.</span>` : '');
+      (bd
+        ? `경계에서 <b>${fmt(bd.setback, 1)}m</b> 이격 → 건축가능 <b>${fmt(bd.area, 1)}㎡</b> (${bd.limitedBy}에 걸림)<br>`
+        : '') +
+      `생성하면 약 <b>${v.floorCount}층</b> · 높이 <b>${fmt(v.height, 1)}m</b> · 연면적 <b>${fmt(v.gfa, 1)}㎡</b>` +
+      (spec.derived.sunCutArea > 0.5 ? `<br>정북 일조 사선으로 <b>${fmt(spec.derived.sunCutArea, 1)}㎡</b>가 잘립니다.` : '') +
+      (used < 99 ? `<br><span class="warn">이격·층수·높이·일조 조건 때문에 최대 연면적의 ${fmt(used, 0)}%만 쓸 수 있습니다.</span>` : '');
   }
   renderSiteCard(site);
 }
@@ -377,6 +568,17 @@ let chatEntries = []; // 새로고침 후 복원할 채팅 로그: { kind, html,
 let pendingProposal = null; // 검토 중인 AI 수정안(적용 전): { floors, touched, diff, interpretation, instructions, warnings }
 let busy = false; // LLM 응답 대기 중
 let selectedLevel = null; // 직접 편집 중인 층 번호
+let landData = null; // 조회한 대지 자료: { lon, lat, parcel, land, zoneRatios, buildings, neighbors, sources, boundaryLocal }
+let neighborGroup = null; // 주변 건물 매스(선택 대상이 아니라 massGroup과 따로 둔다)
+let showNeighbors = true;
+
+const SOURCE_LABEL = {
+  parcel: '필지 경계 (VWorld 연속지적)',
+  land: '용도지역·지목 (VWorld 토지특성)',
+  building: '기존 건물 (공공데이터포털 건축물대장)',
+  neighbors: '주변 건물 (VWorld 건물통합정보)',
+  cadastral: '지적도 미니맵 (VWorld WMS)'
+};
 
 // ---- 건물 정보 검증: 잘못된 값이면 이유 목록을 돌려주고, 호출자는 기존 설계를 그대로 둔다 ----
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -413,6 +615,7 @@ function validateSite(site) {
   checkNumber(site, 'maxFloors', '최대 층수', { min: 1, max: Infinity, integer: true, unit: '층' }, errors);
   checkNumber(site, 'floorHeight', '층고', { min: 2, max: 14, unit: 'm' }, errors);
   checkNumber(site, 'maxHeight', '최고 높이 제한', { min: 2, max: 1000, unit: 'm' }, errors);
+  checkNumber(site, 'setback', '경계 이격', { min: 0, max: 20, unit: 'm' }, errors);
   if (isNum(site.maxHeight) && site.maxHeight < (isNum(site.floorHeight) ? site.floorHeight : 3.3)) {
     errors.push(`maxHeight(최고 높이 제한 ${site.maxHeight}m)가 층고(${isNum(site.floorHeight) ? site.floorHeight : 3.3}m)보다 낮아 한 층도 지을 수 없습니다.`);
   }
@@ -507,6 +710,7 @@ function saveDesign() {
         rev,
         history: history.slice(-MAX_HISTORY),
         chat: chatEntries.slice(-MAX_CHAT),
+        land: landData, // 조회한 대지 자료(경계·주변 건물·자료 상태)도 함께 남겨 새로고침 후 복원
         // 검토 중인 수정안(아직 적용 전) — 새로고침 후 미리보기로 복원한다
         pending: pendingProposal
           ? {
@@ -533,7 +737,8 @@ function loadDesign() {
       rev: Number.isInteger(saved.rev) ? saved.rev : 0,
       history: Array.isArray(saved.history) ? saved.history.filter((h) => h && isValidSpec(h.spec)) : [],
       chat: Array.isArray(saved.chat) ? saved.chat.filter((m) => m && typeof m.html === 'string') : [],
-      pending: restorePending(saved.pending)
+      pending: restorePending(saved.pending),
+      land: saved.land && saved.land.parcel ? saved.land : null
     };
   } catch (e) {
     return null;
@@ -566,9 +771,38 @@ function computeDerived(site) {
   return { maxBuildingArea, maxFloorArea };
 }
 
+// 실제 필지에서는 경계를 감싸는 최소 직사각형을 기준으로 매스를 앉힌다(각도·중심·비율).
+const frameCache = new WeakMap();
+function siteFrame(site) {
+  if (!site.boundary?.length) return null;
+  if (!frameCache.has(site)) frameCache.set(site, minAreaRect(site.boundary));
+  return frameCache.get(site);
+}
+
+// 필지 좌표계(직사각형 기준)로 만든 층들을 실제 위치·각도로 옮긴다.
+// three.js에서 rotation.y = a 인 층의 로컬 +X는 월드 (cos a, −sin a) 방향이므로, 경계 각도 θ에 맞추려면 a = −θ.
+function placeFloorsOnSite(floors, site) {
+  const frame = siteFrame(site);
+  if (!frame) return floors;
+  const a = (-frame.angleDeg * Math.PI) / 180;
+  const [cx, cz] = frame.center;
+  return floors.map((f) => {
+    const u = f.offsetX || 0;
+    const v = f.offsetZ || 0;
+    return {
+      ...f,
+      offsetX: +(cx + u * Math.cos(a) + v * Math.sin(a)).toFixed(2),
+      offsetZ: +(cz - u * Math.sin(a) + v * Math.cos(a)).toFixed(2),
+      rotationDeg: +(-frame.angleDeg).toFixed(2)
+    };
+  });
+}
+
 function footprintDims(area, site) {
   let ratio = 1; // width / depth
-  if (site.siteWidth && site.siteDepth) ratio = site.siteWidth / site.siteDepth;
+  const frame = siteFrame(site);
+  if (frame && frame.depth > 0) ratio = frame.width / frame.depth;
+  else if (site.siteWidth && site.siteDepth) ratio = site.siteWidth / site.siteDepth;
   const depth = Math.sqrt(area / ratio);
   const width = area / depth;
   // 소수점 반올림으로 폭×깊이가 목표 면적(법정 상한)을 넘지 않도록 내림 처리한다.
@@ -592,6 +826,23 @@ function generateMaxMassSpec(site) {
   const { maxBuildingArea, maxFloorArea } = computeDerived(site);
   const maxFloors = floorCap(site);
   const floorHeight = site.floorHeight || 3.3;
+
+  // 실제 필지 경계가 있으면 경계를 따라 이격한 다각형을 층마다 쌓고 정북 일조 사선을 적용한다.
+  if (site.boundary?.length > 2) {
+    const built = buildPolygonFloors(site, { maxBuildingArea, maxFloorArea, maxFloors, floorHeight });
+    if (built.floors.length) {
+      return {
+        site,
+        derived: {
+          maxBuildingArea: +maxBuildingArea.toFixed(2),
+          maxFloorArea: +maxFloorArea.toFixed(2),
+          buildable: { area: +built.base.area.toFixed(2), setback: built.base.setback, limitedBy: built.base.limitedBy },
+          sunCutArea: built.cutArea
+        },
+        floors: built.floors
+      };
+    }
+  }
 
   const floors = [];
   let remainingArea = maxFloorArea;
@@ -620,7 +871,7 @@ function generateMaxMassSpec(site) {
       maxBuildingArea: +maxBuildingArea.toFixed(2),
       maxFloorArea: +maxFloorArea.toFixed(2)
     },
-    floors
+    floors: placeFloorsOnSite(floors, site) // 실제 필지면 경계 방향·중심에 맞춘다
   };
 }
 
@@ -727,7 +978,7 @@ function buildAlternativeSpecs(site) {
   const derived = { maxBuildingArea: +maxBuildingArea.toFixed(2), maxFloorArea: +maxFloorArea.toFixed(2) };
   return ALTERNATIVES.map((alt) => ({
     ...alt,
-    spec: { site, derived, floors: alt.build(site, { maxBuildingArea, maxFloorArea }, maxFloors, h) }
+    spec: { site, derived, floors: placeFloorsOnSite(alt.build(site, { maxBuildingArea, maxFloorArea }, maxFloors, h), site) }
   }));
 }
 
@@ -742,8 +993,8 @@ function floorLabel(level) {
 function computeValues(site, floors) {
   const above = floors.filter((f) => f.level > 0);
   const basement = floors.filter((f) => f.level < 0);
-  const buildArea = above.length ? Math.max(...above.map((f) => f.width * f.depth)) : 0;
-  const gfa = above.reduce((s, f) => s + f.width * f.depth, 0);
+  const buildArea = above.length ? Math.max(...above.map(plateArea)) : 0;
+  const gfa = above.reduce((s, f) => s + plateArea(f), 0);
   const height = above.reduce((s, f) => s + f.height, 0);
   const siteArea = site.siteArea || 0;
   return {
@@ -824,15 +1075,8 @@ function renderSpec(spec, touchedLevels, showDelta, { keepCamera = false } = {})
   if (siteOutline) scene.remove(siteOutline);
 
   const site = spec.site;
-  let sw = site.siteWidth;
-  let sd = site.siteDepth;
-  if (!sw || !sd) {
-    const s = Math.sqrt(site.siteArea);
-    sw = s;
-    sd = s;
-  }
-  const outlineGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(sw, 0.01, sd));
-  siteOutline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: 0x57c2d6 }));
+  const { sw, sd } = siteDims(site);
+  siteOutline = buildSiteOutline(site, sw, sd);
   scene.add(siteOutline);
 
   if (groundGrid) scene.remove(groundGrid);
@@ -854,6 +1098,10 @@ function renderSpec(spec, touchedLevels, showDelta, { keepCamera = false } = {})
     setTimeout(() => flashEdges.forEach((m) => (m.color.set(0x0b1014))), 1500);
   }
 
+  // 주변 건물은 조회한 필지 좌표계 기준이므로, 그 경계를 쓰지 않는 대지에서는 숨긴다.
+  if (neighborGroup) neighborGroup.visible = showNeighbors && !!spec.site.boundary?.length;
+  if (neighborsBtn) neighborsBtn.hidden = !neighborGroup || !spec.site.boundary?.length;
+
   if (!keepCamera) frameCamera([spec.floors], topY, bottomY, sw, sd);
 
   emptyState.hidden = spec.floors.length > 0;
@@ -862,6 +1110,17 @@ function renderSpec(spec, touchedLevels, showDelta, { keepCamera = false } = {})
   renderLayerPanel(spec);
   renderTitleblock(!!showDelta, spec);
   updateFloorEditor(spec);
+}
+
+// 실제 필지 경계(boundary, 미터 좌표)가 있으면 그 모양 그대로, 없으면 사각형으로 대지선을 그린다.
+function buildSiteOutline(site, sw, sd) {
+  const mat = new THREE.LineBasicMaterial({ color: 0x57c2d6 });
+  if (site.boundary?.length > 2) {
+    const pts = site.boundary.map(([x, z]) => new THREE.Vector3(x, 0.02, z));
+    pts.push(pts[0].clone());
+    return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+  }
+  return new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(sw, 0.01, sd)), mat);
 }
 
 // 지상층(level>0)은 지면(y=0)에서 위로, 지하층(level<0)은 지면에서 아래로 각각 쌓는다.
@@ -885,15 +1144,26 @@ function stackFloors(floors, onFloor) {
 const FLOOR_FILL = { solid: 0xede8dc, touched: 0xf2d2c8, selected: 0xcfeaf0 };
 const FLOOR_EDGE = { solid: 0x0b1014, touched: 0xe2604a, selected: 0x1f8fa6 };
 
+// 다각형 층은 shape를 그대로 세우고(중심 정렬 없음), 사각형 층은 기존처럼 박스로 만든다.
+function floorGeometry(f) {
+  if (!f.shape) return new THREE.BoxGeometry(f.width, f.height, f.depth);
+  const shape = new THREE.Shape(f.shape.map(([x, z]) => new THREE.Vector2(x, -z)));
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: f.height, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2); // XY로 만든 뒤 눕혀 높이를 +Y로
+  geo.translate(0, -f.height / 2, 0); // 다른 층과 같은 "중심 높이" 기준으로 맞춘다
+  return geo;
+}
+
 function addFloorMesh(f, centerY, style) {
-  const geo = new THREE.BoxGeometry(f.width, f.height, f.depth);
+  const geo = floorGeometry(f);
   const mat =
     style === 'ghost'
       ? new THREE.MeshBasicMaterial({ color: 0x57c2d6, transparent: true, opacity: 0.07, depthWrite: false })
       : new THREE.MeshStandardMaterial({ color: FLOOR_FILL[style], roughness: 0.85, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(f.offsetX || 0, centerY, f.offsetZ || 0);
-  mesh.rotation.y = THREE.MathUtils.degToRad(f.rotationDeg || 0);
+  // 다각형 층은 좌표가 이미 절대 위치라 추가 이동·회전이 없다.
+  mesh.position.set(f.shape ? 0 : f.offsetX || 0, centerY, f.shape ? 0 : f.offsetZ || 0);
+  mesh.rotation.y = f.shape ? 0 : THREE.MathUtils.degToRad(f.rotationDeg || 0);
   if (style !== 'ghost') mesh.userData.level = f.level; // 클릭·밀고 당기기에서 어느 층인지 찾는 데 쓴다
 
   const lineMat =
@@ -914,9 +1184,11 @@ function addFloorMesh(f, centerY, style) {
 
 function frameCamera(floorSets, topY, bottomY, sw, sd) {
   const all = floorSets.flat();
-  const footDiag = all.length ? Math.max(...all.map((f) => Math.hypot(f.width, f.depth))) : Math.hypot(sw, sd);
+  const footDiag = all.length ? Math.max(...all.map(floorDiag)) : Math.hypot(sw, sd);
+  // 주변 건물이 있으면 맥락이 보이도록 조금 더 넓게(최대 60m 범위) 잡는다.
+  const context = showNeighbors && landData?.neighbors?.length ? Math.min(60, Math.max(...landData.neighbors.map((b) => b.dist || 0)) + 15) : 0;
   controls.target.set(0, (topY + bottomY) / 2, 0);
-  viewRadius = Math.max(footDiag, topY - bottomY, 10) * 1.6 + 8;
+  viewRadius = Math.max(footDiag, Math.hypot(sw, sd), topY - bottomY, context, 10) * 1.6 + 8;
 }
 
 // 미리보기 중에는 설계를 직접 바꾸는 동작(새로 생성·대안 채택·되돌리기)을 잠근다.
@@ -951,7 +1223,7 @@ function renderLayerPanel(spec, marks = new Map()) {
       (f) => `
     <div class="layer-row${f.level < 0 ? ' basement' : ''}${marks.has(f.level) ? ' ' + marks.get(f.level) : ''}${f.level === selectedLevel ? ' selected' : ''}" data-level="${f.level}" role="button" tabindex="0" title="클릭해서 이 층 편집">
       <span class="layer-lv">${floorLabel(f.level)}</span>
-      <span class="layer-dim">${fmt(f.width, 1)}×${fmt(f.depth, 1)}<u>m</u> · ${fmt(f.height, 1)}<u>m</u></span>
+      <span class="layer-dim">${f.shape ? `${fmt(plateArea(f), 1)}<u>m²</u>` : `${fmt(f.width, 1)}×${fmt(f.depth, 1)}<u>m</u>`} · ${fmt(f.height, 1)}<u>m</u></span>
       ${f.use ? `<span class="layer-use">${escapeHtml(f.use)}</span>` : ''}
     </div>`
     )
@@ -999,6 +1271,7 @@ if (savedDesign) {
   history = savedDesign.history;
   chatEntries = savedDesign.chat;
   chatEntries.forEach((m) => renderMessage(m));
+  if (savedDesign.land) showLand(savedDesign.land);
   setSiteInputs(currentSpec.site);
   renderSpec(currentSpec);
   setView('bird');
@@ -1168,6 +1441,13 @@ function applyChanges(floors, changes) {
 
     next = next.map((f) => {
       if (f.level < c.floorStart || f.level > c.floorEnd) return f;
+      // 다각형 층은 폭·깊이·위치·회전을 shape 자체에 적용한다(모양을 유지한 채 늘리고/옮기고/돌린다).
+      if (f.shape) {
+        const updated = { ...f, height: c.height != null ? clamp(c.height, 2, 14) : f.height, use: c.use != null ? c.use : f.use };
+        updated.shape = transformShape(f.shape, c);
+        touched.add(updated);
+        return updated;
+      }
       const updated = {
         ...f,
         width: c.width != null ? clamp(c.width, 3, 300) : f.width,
@@ -1195,11 +1475,41 @@ function applyChanges(floors, changes) {
   return { floors: merged.map(({ _src, ...f }) => f), touched: renumberedTouched, diff };
 }
 
+// 층 바닥면적 — 다각형 층(shape)은 실제 다각형 면적, 사각형 층은 폭×깊이
 function plateArea(f) {
-  return f.width * f.depth;
+  return f.shape ? polyArea(f.shape) : f.width * f.depth;
+}
+
+// 층의 가로·세로(다각형 층은 외접 사각형) — 표시·카메라 계산용
+function floorSize(f) {
+  if (!f.shape) return { width: f.width, depth: f.depth };
+  const b = polyBBox(f.shape);
+  return { width: +(b.maxX - b.minX).toFixed(2), depth: +(b.maxZ - b.minZ).toFixed(2) };
+}
+
+function floorDiag(f) {
+  const { width, depth } = floorSize(f);
+  return Math.hypot(width, depth);
 }
 
 // 층별 변경 내역: 추가/삭제/변경(치수·층고·위치·회전·용도, 층 번호 이동 포함)
+// 다각형 층에 폭/깊이/위치/회전 변경을 적용: 외접 사각형 기준으로 늘리고, 중심 기준으로 옮기고 돌린다.
+function transformShape(shape, c) {
+  let out = shape;
+  const size = floorSize({ shape });
+  if (c.width != null || c.depth != null) {
+    const kx = c.width != null && size.width > 0.01 ? clamp(c.width, 1, 1000) / size.width : 1;
+    const kz = c.depth != null && size.depth > 0.01 ? clamp(c.depth, 1, 1000) / size.depth : 1;
+    out = scalePoly(out, kx, kz);
+  }
+  if (c.rotationDeg != null) out = rotatePoly(out, c.rotationDeg);
+  if (c.offsetX != null || c.offsetZ != null) {
+    const [cx, cz] = polyCentroid(out);
+    out = translatePoly(out, c.offsetX != null ? c.offsetX - cx : 0, c.offsetZ != null ? c.offsetZ - cz : 0);
+  }
+  return out;
+}
+
 function diffFloors(before, after) {
   const rows = [];
   const kept = new Set();
@@ -1212,7 +1522,11 @@ function diffFloors(before, after) {
     const b = before.find((x) => x.level === f._src);
     const diffs = [];
     const near = (x, y, tol = 0.05) => Math.abs((x || 0) - (y || 0)) < tol;
-    if (!near(b.width, f.width) || !near(b.depth, f.depth)) diffs.push(`평면 ${fmt(b.width, 1)}×${fmt(b.depth, 1)} → ${fmt(f.width, 1)}×${fmt(f.depth, 1)}m`);
+    if (b.shape || f.shape) {
+      if (!near(plateArea(b), plateArea(f), 0.5)) diffs.push(`바닥면적 ${fmt(plateArea(b), 1)} → ${fmt(plateArea(f), 1)}㎡`);
+    } else if (!near(b.width, f.width) || !near(b.depth, f.depth)) {
+      diffs.push(`평면 ${fmt(b.width, 1)}×${fmt(b.depth, 1)} → ${fmt(f.width, 1)}×${fmt(f.depth, 1)}m`);
+    }
     if (!near(b.height, f.height)) diffs.push(`층고 ${fmt(b.height, 1)} → ${fmt(f.height, 1)}m`);
     if (!near(b.offsetX, f.offsetX) || !near(b.offsetZ, f.offsetZ)) diffs.push(`위치 (${fmt(b.offsetX, 1)}, ${fmt(b.offsetZ, 1)}) → (${fmt(f.offsetX, 1)}, ${fmt(f.offsetZ, 1)})`);
     if (!near(b.rotationDeg, f.rotationDeg, 0.5)) diffs.push(`회전 ${fmt(b.rotationDeg, 0)}° → ${fmt(f.rotationDeg, 0)}°`);
@@ -1237,7 +1551,9 @@ async function requestMassEdit(instruction) {
       currentSpec,
       instruction,
       model: modelInput.value.trim(),
-      provider: providerSelect.value
+      provider: providerSelect.value,
+      // .env 키가 없거나 인증에 실패할 때만 서버가 쓰는 예비 키(이 탭에 입력된 값)
+      key: userKeys[providerSelect.value] || ''
     })
   });
 
@@ -1252,6 +1568,9 @@ async function requestMassEdit(instruction) {
     response: debug?.response
   });
   if (!res.ok) throw new Error(data.error || `API 오류 (${res.status})`);
+  if (debug?.keyFallback) {
+    appendMessage('system', escapeHtml('서버 .env 키 인증에 실패해 이 탭에 입력한 키로 다시 시도했습니다.'));
+  }
   return data;
 }
 
@@ -1531,6 +1850,10 @@ function renderPreviewScene(proposal) {
 }
 
 function siteDims(site) {
+  if (site.boundary?.length) {
+    const b = ringBBox(site.boundary);
+    return { sw: b.maxX - b.minX, sd: b.maxZ - b.minZ };
+  }
   if (site.siteWidth && site.siteDepth) return { sw: site.siteWidth, sd: site.siteDepth };
   const s = Math.sqrt(site.siteArea);
   return { sw: s, sd: s };
@@ -1610,7 +1933,7 @@ function buildMassObject(spec) {
     addFloor(f, yTop - f.height / 2);
     yTop -= f.height;
   });
-  return { group, height: y, diag: Math.max(Math.hypot(sw, sd), ...spec.floors.map((f) => Math.hypot(f.width, f.depth))) };
+  return { group, height: y, diag: Math.max(Math.hypot(sw, sd), ...spec.floors.map(floorDiag)) };
 }
 
 function createCompareView(container, spec, frame) {
@@ -1684,7 +2007,7 @@ function openCompare() {
 
   const values = compareAlts.map((a) => {
     const v = computeValues(site, a.spec.floors);
-    const plates = a.spec.floors.filter((f) => f.level > 0).map((f) => f.width * f.depth);
+    const plates = a.spec.floors.filter((f) => f.level > 0).map(plateArea);
     return { ...v, minPlate: Math.min(...plates), maxPlate: Math.max(...plates) };
   });
   // 세 안 사이에 의미 있는 차이(최댓값의 1% 이상)가 있을 때만 "가장 ~" 표시를 붙인다.
@@ -1814,9 +2137,10 @@ function updateFloorEditor(spec) {
   }
   floorEditor.hidden = false;
   feTitle.innerHTML = `${floorLabel(f.level)} 편집${f.use ? `<small>${escapeHtml(f.use)}</small>` : ''}`;
+  const shown = editorValues(f);
   FE_FIELDS.forEach((k) => {
     const input = el(`fe_${k}`);
-    if (document.activeElement !== input) input.value = round2(f[k] || 0);
+    if (document.activeElement !== input) input.value = round2(shown[k] || 0);
     input.classList.remove('invalid');
   });
   feError.hidden = true;
@@ -1828,12 +2152,23 @@ function updateFloorEditor(spec) {
     .join('');
 }
 
+// 다각형 층은 폭·깊이를 외접 사각형, 위치를 중심으로 환산해 보여준다.
+function editorValues(f) {
+  if (!f.shape) return f;
+  const { width, depth } = floorSize(f);
+  const [cx, cz] = polyCentroid(f.shape);
+  return { width, depth, height: f.height, offsetX: +cx.toFixed(2), offsetZ: +cz.toFixed(2) };
+}
+
 // 한 번의 편집 = 되돌리기 한 단계. 층 하나의 값만 바꾸고 나머지 층은 그대로 둔다.
 function commitFloorEdit(level, patch) {
   const idx = currentSpec.floors.findIndex((f) => f.level === level);
   if (idx < 0) return;
   const before = currentSpec.floors[idx];
-  const after = { ...before, ...patch };
+  // 다각형 층이면 폭·깊이·위치 변경을 shape에 반영한다(층고·용도는 그대로 필드).
+  const after = before.shape
+    ? { ...before, ...('height' in patch ? { height: patch.height } : {}), shape: patch.shape || transformShape(before.shape, patch) }
+    : { ...before, ...patch };
   const [row] = diffFloors([before], [{ ...after, _src: before.level }]);
   if (!row) {
     renderSpec(currentSpec, null, false, { keepCamera: true });
@@ -2021,6 +2356,16 @@ function updateDrag(ev) {
   let patch;
   if (drag.axis === 'height') {
     patch = { height: round2(clamp(o.height + delta, FE_RULES.height.min, FE_RULES.height.max)) };
+  } else if (o.shape) {
+    // 다각형 층: 끈 반대쪽 변을 고정한 채 그 방향으로만 늘리고 줄인다.
+    const b = polyBBox(o.shape);
+    const along = drag.axis === 'width' ? { size: b.maxX - b.minX, lo: b.minX, hi: b.maxX } : { size: b.maxZ - b.minZ, lo: b.minZ, hi: b.maxZ };
+    const positive = (drag.axis === 'width' ? drag.worldNormal.x : drag.worldNormal.z) > 0;
+    const next = Math.max(FE_RULES[drag.axis].min, along.size + delta);
+    const k = along.size > 0.01 ? next / along.size : 1;
+    const anchor = positive ? [along.lo, along.lo] : [along.hi, along.hi];
+    const about = drag.axis === 'width' ? [anchor[0], 0] : [0, anchor[0]];
+    patch = { shape: drag.axis === 'width' ? scalePoly(o.shape, k, 1, about) : scalePoly(o.shape, 1, k, about) };
   } else {
     const size = drag.axis;
     const next = round2(Math.max(FE_RULES[size].min, o[size] + delta));
@@ -2041,11 +2386,13 @@ function updateDrag(ev) {
   if (mesh) placeHighlight(mesh, drag.localNormal);
 
   const key = drag.axis;
-  const d = patch[key] - o[key];
+  const next = { ...o, ...patch };
+  const valueOf = (f) => (key === 'height' ? f.height : floorSize(f)[key]);
+  const d = valueOf(next) - valueOf(o);
   const name = { width: '폭', depth: '깊이', height: '층고' }[key];
-  const areaText = key === 'height' ? '' : ` · 바닥 ${signed(plateArea({ ...o, ...patch }) - plateArea(o), 1, '㎡')}`;
+  const areaText = key === 'height' ? '' : ` · 바닥 ${signed(plateArea(next) - plateArea(o), 1, '㎡')}`;
   dragLabel.innerHTML =
-    `${name} ${fmt(o[key], 1)} → <b>${fmt(patch[key], 1)}m</b> ` +
+    `${name} ${fmt(valueOf(o), 1)} → <b>${fmt(valueOf(next), 1)}m</b> ` +
     `<span class="${d >= 0 ? 'plus' : 'minus'}">(${signed(d, 1, 'm')})</span>${areaText}`;
   const vp = viewport.getBoundingClientRect();
   dragLabel.style.left = `${ev.clientX - vp.left}px`;
@@ -2088,4 +2435,251 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !compareOverlay.hidden) return;
   if (drag) finishDrag(false);
   else if (selectedLevel != null) selectFloor(null);
+});
+
+// ---- 대지 찾기: 주소 → 필지 경계 + 토지특성 + 건축물대장 + 주변 건물 + 지적도 미니맵 ----
+// 자료마다 성공/실패를 따로 표시하고, 실패한 자료는 빼고 나머지로 진행한다.
+function landKeys() {
+  return { vworld: userKeys.vworld || '', datagokr: userKeys.datagokr || '' };
+}
+
+function renderSources(sources) {
+  const rows = Object.entries(SOURCE_LABEL)
+    .filter(([k]) => sources[k])
+    .map(([k, label]) => {
+      const s = sources[k];
+      const why = s.ok ? s.note : `${s.reason}${s.detail ? ` — ${s.detail}` : ''}`;
+      return `<div class="src ${s.ok ? 'ok' : 'bad'}">
+        <span class="mark">${s.ok ? '✓' : '✕'}</span>
+        <span><span class="name">${escapeHtml(label)}</span>${why ? `<br><span class="why">${escapeHtml(why)}</span>` : ''}</span>
+      </div>`;
+    })
+    .join('');
+  landSources.innerHTML = `<span class="tag">자료 상태</span>${rows}`;
+  landSources.hidden = !rows;
+}
+
+function renderLandInfo(data) {
+  const p = data.parcel;
+  if (!p) {
+    landInfo.hidden = true;
+    landApplyBtn.hidden = true;
+    return;
+  }
+  const z = data.zoneRatios;
+  const bld = data.buildings || [];
+  const bldText = bld.length
+    ? bld
+        .slice(0, 3)
+        .map(
+          (b) =>
+            `${escapeHtml(b.name || '(이름 없음)')} — ${b.mainUse || '용도 미상'} · 지상 ${b.floorsAbove ?? '?'}층` +
+            `${b.totalArea ? ` · 연면적 ${fmt(b.totalArea, 1)}㎡` : ''}${b.approvedAt ? ` · 사용승인 ${b.approvedAt}` : ''}`
+        )
+        .join('<br>')
+    : '';
+  landInfo.innerHTML =
+    `<div class="li-addr">${escapeHtml(p.address || data.query || '선택한 필지')}</div>` +
+    `<div class="li-sub">PNU ${escapeHtml(p.pnu || '-')}</div>` +
+    '<dl>' +
+    `<dt>측정 면적</dt><dd>${fmt(p.areaM2, 1)}㎡</dd>` +
+    (data.land?.officialAreaM2 ? `<dt>공부상 면적</dt><dd>${fmt(data.land.officialAreaM2, 1)}㎡</dd>` : '') +
+    (data.land?.useZone ? `<dt>용도지역</dt><dd>${escapeHtml(data.land.useZone)}</dd>` : '') +
+    (data.land?.jimok ? `<dt>지목</dt><dd>${escapeHtml(data.land.jimok)}</dd>` : '') +
+    (z ? `<dt>적용 비율</dt><dd>건폐율 ${z.bcr}% · 용적률 ${z.far}%</dd>` : '') +
+    '</dl>' +
+    (bldText ? `<div class="li-bld">기존 건물 ${bld.length}동<br>${bldText}</div>` : '') +
+    (data.sources.building?.ok && !bld.length ? '<div class="li-bld">기존 건물: 등록된 건축물대장 없음</div>' : '');
+  landInfo.hidden = false;
+  landApplyBtn.hidden = false;
+  landApplyBtn.disabled = !z && !data.land?.useZone;
+  landApplyBtn.textContent = z
+    ? '이 대지 경계·조건으로 초기 매스 만들기'
+    : '용도지역을 못 읽어 비율을 직접 넣어야 합니다';
+}
+
+// 지적도 이미지(WMS) + 선택한 필지 외곽선
+function renderMinimap(data) {
+  const p = data.parcel;
+  if (!p?.boundary?.length) {
+    minimap.hidden = true;
+    return;
+  }
+  minimap.hidden = false;
+  const lons = p.boundary.map((c) => c[0]);
+  const lats = p.boundary.map((c) => c[1]);
+  const pad = Math.max((Math.max(...lons) - Math.min(...lons)) * 1.6, (Math.max(...lats) - Math.min(...lats)) * 1.6, 0.0012);
+  const cLon = (Math.min(...lons) + Math.max(...lons)) / 2;
+  const cLat = (Math.min(...lats) + Math.max(...lats)) / 2;
+  const box = [cLon - pad, cLat - pad, cLon + pad, cLat + pad];
+
+  mmFail.hidden = true;
+  mmImage.hidden = false;
+  mmImage.onerror = () => {
+    mmImage.hidden = true;
+    mmFail.hidden = false;
+    mmFail.textContent = '지적도 이미지를 불러오지 못했습니다. VWorld 키와 도메인 등록을 확인해 주세요.';
+    renderSources({ ...data.sources, cadastral: { ok: false, reason: '지적도 이미지 조회 실패', detail: '' } });
+  };
+  mmImage.src = cadastralMapUrl(box, 512, landKeys());
+
+  const pts = p.boundary
+    .map(([lon, lat]) => `${(((lon - box[0]) / (box[2] - box[0])) * 100).toFixed(2)},${(((box[3] - lat) / (box[3] - box[1])) * 100).toFixed(2)}`)
+    .join(' ');
+  mmOverlay.innerHTML = `<polygon class="parcel" points="${pts}" />`;
+  mmCaption.textContent = `${p.address || ''} · 반경 약 ${Math.round(pad * 111320)}m`;
+}
+
+// 주변 건물: 발자국 폴리곤을 층수(또는 높이)만큼 세운다. 매스와 구분되도록 어둡고 반투명하게.
+function renderNeighbors(data) {
+  if (neighborGroup) {
+    scene.remove(neighborGroup);
+    neighborGroup.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+    neighborGroup = null;
+  }
+  const list = data?.neighbors || [];
+  if (!list.length) return;
+
+  neighborGroup = new THREE.Group();
+  const fill = new THREE.MeshStandardMaterial({ color: 0x8595a0, roughness: 0.95, transparent: true, opacity: 0.72 });
+  const edge = new THREE.LineBasicMaterial({ color: 0x46606d });
+  list.forEach((b) => {
+    if (!b.local || b.local.length < 3) return;
+    const shape = new THREE.Shape(b.local.map(([x, z]) => new THREE.Vector2(x, -z)));
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: Math.max(2, b.height), bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2); // XY 평면에서 만든 뒤 눕혀서 높이가 +Y가 되게 한다
+    const mesh = new THREE.Mesh(geo, fill);
+    neighborGroup.add(mesh, new THREE.LineSegments(new THREE.EdgesGeometry(geo), edge));
+  });
+  neighborGroup.visible = showNeighbors;
+  scene.add(neighborGroup);
+  neighborsBtn.hidden = false;
+}
+
+// 주변 건물은 맥락용이라 끄고 볼 수 있게 한다.
+function setNeighborsVisible(on) {
+  showNeighbors = on;
+  if (neighborGroup) neighborGroup.visible = on;
+  neighborsBtn.classList.toggle('on', on);
+  neighborsBtn.textContent = on ? '주변 건물 끄기' : '주변 건물 켜기';
+}
+
+// 조회 결과를 화면 좌표(미터)로 바꿔 저장한다. 원점은 필지 중심.
+function prepareLandData(data, query) {
+  const p = data.parcel;
+  if (p?.boundary?.length > 2) {
+    const [lon0, lat0] = [p.boundary.reduce((s, c) => s + c[0], 0) / p.boundary.length, p.boundary.reduce((s, c) => s + c[1], 0) / p.boundary.length];
+    data.origin = [lon0, lat0];
+    data.boundaryLocal = ringToLocal(p.boundary, lon0, lat0);
+    const [cx, cz] = centroid(data.boundaryLocal);
+    data.boundaryLocal = data.boundaryLocal.map(([x, z]) => [+(x - cx).toFixed(2), +(z - cz).toFixed(2)]);
+    data.localAreaM2 = +polygonArea(data.boundaryLocal).toFixed(1);
+    // 주변 건물도 같은 원점으로. 가까운 것부터 120동만 남겨 저장 용량을 줄인다.
+    data.neighbors = (data.neighbors || [])
+      .map((b) => {
+        const local = ringToLocal(b.ring, lon0, lat0).map(([x, z]) => [+(x - cx).toFixed(2), +(z - cz).toFixed(2)]);
+        const c = centroid(local);
+        return { name: b.name, floors: b.floors, height: b.height, local, dist: Math.hypot(c[0], c[1]) };
+      })
+      .filter((b) => b.local.length > 2 && b.dist < 200)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 120);
+  }
+  data.query = query || '';
+  return data;
+}
+
+function showLand(data) {
+  landData = data;
+  renderLandInfo(data);
+  renderSources(data.sources);
+  renderMinimap(data);
+  renderNeighbors(data);
+}
+
+async function runLandSearch() {
+  const q = landQuery.value.trim();
+  if (!q) return;
+  landResults.hidden = false;
+  landResults.innerHTML = '<p class="empty">검색 중...</p>';
+  try {
+    const data = await searchLand(q, landKeys());
+    if (!data.items.length) {
+      landResults.innerHTML = '<p class="empty">검색 결과가 없습니다. 지번을 포함해 적어 보세요(예: 서울 서초구 방배동 987-12).</p>';
+      return;
+    }
+    landResults.innerHTML = data.items
+      .map(
+        (it, i) =>
+          `<button type="button" data-i="${i}"><b>${escapeHtml(it.address)}</b>${it.road ? escapeHtml(it.road) + ' · ' : ''}${it.kind}</button>`
+      )
+      .join('');
+    landResults.dataset.items = JSON.stringify(data.items);
+  } catch (e) {
+    landResults.innerHTML = `<p class="empty" style="color:var(--pencil)">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function pickLandCandidate(item) {
+  landResults.innerHTML = `<p class="empty">${escapeHtml(item.address)} 자료를 불러오는 중...</p>`;
+  try {
+    const data = prepareLandData(await loadParcel(item.lon, item.lat, landKeys()), item.address);
+    landResults.hidden = true;
+    showLand(data);
+    saveDesign();
+  } catch (e) {
+    landResults.innerHTML = `<p class="empty" style="color:var(--pencil)">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// 조회한 경계·조건을 대지 조건 입력칸에 넣고 초기 매스를 만든다.
+function applyLandToSite() {
+  if (!landData?.parcel) return;
+  const z = landData.zoneRatios;
+  const site = {
+    name: landData.parcel.address || landData.query,
+    pnu: landData.parcel.pnu,
+    zoning: landData.land?.useZone || '',
+    siteArea: landData.land?.officialAreaM2 || landData.localAreaM2 || landData.parcel.areaM2,
+    coverageRatio: z ? z.bcr : Number(fieldInput('coverageRatio').value) || 60,
+    farRatio: z ? z.far : Number(fieldInput('farRatio').value) || 200,
+    floorHeight: Number(fieldInput('floorHeight').value) || 3.3,
+    setback: Number(fieldInput('setback').value) || 1,
+    sunRule: currentSunRule,
+    boundary: landData.boundaryLocal
+  };
+  setSiteInputs(site);
+  generateBtn.click();
+  appendMessage(
+    'system',
+    escapeHtml(
+      `조회한 대지(${site.name})로 초기 매스를 만들었습니다. 면적 ${fmt(site.siteArea, 1)}㎡` +
+        `${site.zoning ? ` · ${site.zoning}` : ''} · 건폐율 ${site.coverageRatio}% · 용적률 ${site.farRatio}%` +
+        (z ? ' (용도지역 기본 비율 가정)' : ' (비율은 입력값 사용)')
+    )
+  );
+}
+
+landSearchBtn.addEventListener('click', runLandSearch);
+landQuery.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    runLandSearch();
+  }
+});
+landResults.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-i]');
+  if (!btn) return;
+  const items = JSON.parse(landResults.dataset.items || '[]');
+  const item = items[Number(btn.dataset.i)];
+  if (item) pickLandCandidate(item);
+});
+landApplyBtn.addEventListener('click', applyLandToSite);
+neighborsBtn.addEventListener('click', () => setNeighborsVisible(!showNeighbors));
+mmToggle.addEventListener('click', () => {
+  const collapsed = minimap.classList.toggle('collapsed');
+  mmToggle.textContent = collapsed ? '펼치기' : '접기';
 });

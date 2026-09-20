@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { registerLandRoutes } from './land-api.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -145,10 +146,7 @@ const EDIT_TOOL = {
 
 // 콘솔 패널에 그대로 내려보낼 디버그 정보. API 키는 URL 쿼리(Gemini)/헤더(Anthropic)에만 있고
 // 아래 request 바디에는 절대 포함되지 않으므로 브라우저로 내려보내도 안전하다.
-async function callGemini(spec, instruction, model) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw { status: 500, message: '서버에 GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.' };
-
+async function callGemini(spec, instruction, model, apiKey) {
   const useModel = (model && model.trim()) || process.env.GEMINI_MODEL || 'gemini-3.7-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(useModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
@@ -170,7 +168,12 @@ async function callGemini(spec, instruction, model) {
 
   if (!r.ok) {
     const errText = await r.text();
-    throw { status: r.status, message: `Gemini API 오류 (${r.status}): ${errText}`, debug: { ...debugBase, response: errText } };
+    throw {
+      status: r.status,
+      message: `Gemini API 오류 (${r.status}): ${errText}`,
+      authError: isAuthError(r.status, errText),
+      debug: { ...debugBase, response: errText }
+    };
   }
 
   const data = await r.json();
@@ -187,10 +190,7 @@ async function callGemini(spec, instruction, model) {
   return { result: JSON.parse(text), debug: { ...debugBase, response: data } };
 }
 
-async function callAnthropic(spec, instruction, model) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw { status: 500, message: '서버에 ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.' };
-
+async function callAnthropic(spec, instruction, model, apiKey) {
   const useModel = (model && model.trim()) || process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
   const body = {
     model: useModel,
@@ -213,7 +213,12 @@ async function callAnthropic(spec, instruction, model) {
 
   if (!r.ok) {
     const errText = await r.text();
-    throw { status: r.status, message: `Anthropic API 오류 (${r.status}): ${errText}`, debug: { ...debugBase, response: errText } };
+    throw {
+      status: r.status,
+      message: `Anthropic API 오류 (${r.status}): ${errText}`,
+      authError: isAuthError(r.status, errText),
+      debug: { ...debugBase, response: errText }
+    };
   }
 
   const data = await r.json();
@@ -227,6 +232,140 @@ async function callAnthropic(spec, instruction, model) {
   }
 
   return { result: toolUse.input, debug: { ...debugBase, response: data } };
+}
+
+// ---- API 키: .env 키를 먼저 쓰고, 없거나 인증에 실패하면 사용자가 화면에서 입력한 키로 다시 시도 ----
+// 키 값 자체는 로그에도 응답에도 담지 않는다(어느 쪽 키를 썼는지만 keySource로 알린다).
+// .env.example의 예시 문구(your_..._here)가 그대로 남아 있으면 키가 없는 것으로 본다.
+function realKey(v) {
+  const s = (v || '').trim();
+  return !s || /^your_.*here$/i.test(s) ? '' : s;
+}
+
+function isAuthError(status, text) {
+  if (status === 401 || status === 403) return true;
+  // Gemini는 잘못된 키에도 400을 준다
+  return status === 400 && /API[_ ]?key|authentication|unauthorized|invalid[_ ]argument/i.test(text || '');
+}
+
+const PROVIDER_LABEL = { gemini: 'Gemini', anthropic: 'Claude' };
+
+async function callProvider(provider, spec, instruction, model, userKey) {
+  const envKey = realKey(provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.GEMINI_API_KEY);
+  const label = PROVIDER_LABEL[provider];
+  const candidates = [];
+  if (envKey) candidates.push({ source: 'env', key: envKey });
+  if (realKey(userKey) && realKey(userKey) !== envKey) candidates.push({ source: 'user', key: realKey(userKey) });
+
+  if (!candidates.length) {
+    throw {
+      status: 401,
+      message: `${label} API 키가 없습니다. 서버 .env에 넣거나 화면 왼쪽 "API 키 직접 입력"에 넣어 주세요.`
+    };
+  }
+
+  let lastError;
+  for (let i = 0; i < candidates.length; i++) {
+    const { source, key } = candidates[i];
+    try {
+      const out = provider === 'anthropic'
+        ? await callAnthropic(spec, instruction, model, key)
+        : await callGemini(spec, instruction, model, key);
+      out.debug.keySource = source;
+      if (i > 0) out.debug.keyFallback = true;
+      return out;
+    } catch (e) {
+      lastError = e;
+      const hasNext = i < candidates.length - 1;
+      if (!hasNext || !e.authError) break;
+      console.warn(`${label} ${source} 키 인증 실패 → 다음 키로 재시도합니다.`);
+    }
+  }
+  if (lastError.authError) {
+    const tried = candidates.map((c) => (c.source === 'env' ? '.env 키' : '입력한 키')).join(', ');
+    lastError.message = `${label} 인증 실패 (${tried} 모두 거부됨). 키를 확인해 주세요.\n${lastError.message}`;
+  }
+  throw lastError;
+}
+
+// 공공데이터포털 오류 코드 → 무엇을 고쳐야 하는지
+const DATAGOKR_HINTS = {
+  30: '등록되지 않은 서비스 키입니다. ① 포털에서 "건축물대장정보 서비스" 활용신청이 승인됐는지 ② 신청 직후라면 반영까지 1시간쯤 기다렸는지 ③ 마이페이지의 "일반 인증키(Decoding)" 값을 넣었는지 확인해 주세요.',
+  31: '키 사용 기간이 만료되었습니다. 포털에서 연장 신청이 필요합니다.',
+  22: '요청 한도를 초과했습니다. 잠시 후 또는 내일 다시 시도해 주세요.',
+  20: '이 서비스에 접근 권한이 없습니다. 활용신청 승인 상태를 확인해 주세요.',
+  32: '포털에 등록되지 않은 IP에서 보낸 요청입니다. 등록한 IP를 확인해 주세요.',
+  12: '요청한 오픈API 서비스가 없거나 폐기되었습니다.',
+  10: '요청 값이 잘못되었습니다.'
+};
+
+// 공공데이터포털 키는 Decoding/Encoding 두 형태로 발급되어 헷갈리기 쉬우므로 두 형태를 모두 시도한다.
+async function testDataGoKr(key) {
+  const base =
+    'https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo' +
+    '?sigunguCd=11650&bjdongCd=10100&_type=json&numOfRows=1&pageNo=1&serviceKey=';
+  const looksEncoded = /%[0-9A-Fa-f]{2}/.test(key);
+  const candidates = looksEncoded
+    ? [{ form: 'Encoding 키 그대로', value: key }, { form: 'Decoding 키로 변환', value: encodeURIComponent(decodeURIComponent(key)) }]
+    : [{ form: 'Decoding 키', value: encodeURIComponent(key) }];
+
+  let last = null;
+  for (const c of candidates) {
+    const r = await fetch(base + c.value);
+    const text = await r.text();
+    const code = Number((text.match(/returnReasonCode"?\s*[:>]\s*"?(\d+)/) || [])[1]);
+    const errMsg = (text.match(/errMsg"?\s*[:>]\s*"?([A-Z_]+)/) || [])[1];
+    const resultCode = (text.match(/resultCode"?\s*[:>]\s*"?(\d+)/) || [])[1];
+
+    if (r.ok && !errMsg && (resultCode === '00' || /"?bldNm"?|totArea|"items"/.test(text))) {
+      return { ok: true, message: `공공데이터포털 서비스 키가 확인되었습니다. (${c.form})` };
+    }
+    last = { code, errMsg, text, status: r.status, form: c.form };
+  }
+
+  const hint = DATAGOKR_HINTS[last.code] || '';
+  const reason = last.errMsg || `HTTP ${last.status}`;
+  return {
+    ok: false,
+    message: `공공데이터포털 키 확인 실패 — ${reason}${last.code ? ` (코드 ${last.code})` : ''}. ${hint}`.trim(),
+    detail: last.text.replace(/\s+/g, ' ').slice(0, 300)
+  };
+}
+
+// 키가 쓸 수 있는 키인지만 확인한다(가벼운 조회 요청). 키 값은 응답에 넣지 않는다.
+async function testKey(provider, key) {
+  if (provider === 'gemini') {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`);
+    if (r.ok) return { ok: true, message: 'Gemini 키가 확인되었습니다.' };
+    return { ok: false, message: `Gemini 키 확인 실패 (${r.status}): ${(await r.text()).slice(0, 200)}` };
+  }
+  if (provider === 'anthropic') {
+    const r = await fetch('https://api.anthropic.com/v1/models?limit=1', {
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+    });
+    if (r.ok) return { ok: true, message: 'Claude 키가 확인되었습니다.' };
+    return { ok: false, message: `Claude 키 확인 실패 (${r.status}): ${(await r.text()).slice(0, 200)}` };
+  }
+  if (provider === 'datagokr') {
+    return testDataGoKr(key);
+  }
+  if (provider === 'vworld') {
+    const url = `https://api.vworld.kr/ned/data/getLandCharacteristics?key=${encodeURIComponent(key)}&pnu=1165010100109870012&format=json&numOfRows=1&pageNo=1&domain=http://localhost`;
+    const r = await fetch(url);
+    const text = await r.text();
+    const resultCode = (text.match(/resultCode"?\s*[:>]\s*"?([A-Z_]+)/) || [])[1];
+    const resultMsg = (text.match(/resultMsg"?\s*[:>]\s*"?([^"<]+)/) || [])[1];
+    if (r.ok && !resultCode) return { ok: true, message: 'VWorld 키가 확인되었습니다.' };
+    const hint = /INVALID_KEY/i.test(resultCode || '')
+      ? 'vworld.kr에서 발급받은 인증키인지, 인증키 신청 때 등록한 도메인에 localhost가 포함되는지 확인해 주세요.'
+      : '';
+    return {
+      ok: false,
+      message: `VWorld 키 확인 실패 — ${resultMsg || resultCode || `HTTP ${r.status}`}. ${hint}`.trim(),
+      detail: text.replace(/\s+/g, ' ').slice(0, 300)
+    };
+  }
+  return { ok: false, message: '알 수 없는 키 종류입니다.' };
 }
 
 // 일부 모델이 tool-call 포맷 잔재(예: "</explanation>", "</invoke>")를 텍스트 필드 끝에
@@ -249,23 +388,55 @@ function sanitizeResult(result) {
   };
 }
 
+// 서버 .env에 어떤 키가 들어 있는지만 알려 준다(값은 보내지 않는다).
+app.get('/api/keys/status', (req, res) => {
+  res.json({
+    gemini: !!realKey(process.env.GEMINI_API_KEY),
+    anthropic: !!realKey(process.env.ANTHROPIC_API_KEY),
+    vworld: !!realKey(process.env.VWORLD_API_KEY),
+    datagokr: !!realKey(process.env.DATA_GO_KR_SERVICE_KEY)
+  });
+});
+
+// 화면에서 입력한 키가 쓸 수 있는 키인지 확인한다. 키는 저장하지 않고 이 요청에만 쓴다.
+app.post('/api/keys/test', async (req, res) => {
+  const { provider, key } = req.body || {};
+  if (!provider || typeof key !== 'string' || !key.trim()) {
+    return res.status(400).json({ ok: false, message: 'provider와 key 값이 필요합니다.' });
+  }
+  try {
+    res.json(await testKey(provider, key.trim()));
+  } catch (e) {
+    res.json({ ok: false, message: `확인 중 오류: ${e.message || e}` });
+  }
+});
+
 app.post('/api/generate', async (req, res) => {
   try {
-    const { currentSpec, instruction, model, provider } = req.body || {};
+    const { currentSpec, instruction, model, provider, key } = req.body || {};
     if (!currentSpec || !instruction) {
       return res.status(400).json({ error: 'currentSpec, instruction 값이 필요합니다.' });
     }
 
-    const { result, debug } =
-      provider === 'anthropic'
-        ? await callAnthropic(currentSpec, instruction, model)
-        : await callGemini(currentSpec, instruction, model);
+    const { result, debug } = await callProvider(
+      provider === 'anthropic' ? 'anthropic' : 'gemini',
+      currentSpec,
+      instruction,
+      model,
+      typeof key === 'string' ? key : ''
+    );
 
     res.json({ ...sanitizeResult(result), _debug: debug });
   } catch (e) {
     const status = e.status || 500;
     res.status(status).json({ error: e.message || String(e), _debug: e.debug });
   }
+});
+
+// 대지 자료 조회(VWorld·공공데이터포털). AI 키와 같은 규칙: .env 키를 먼저 쓰고 없으면 화면에서 입력한 키.
+registerLandRoutes(app, (kind, userKey) => {
+  const envKey = realKey(kind === 'vworld' ? process.env.VWORLD_API_KEY : process.env.DATA_GO_KR_SERVICE_KEY);
+  return envKey || realKey(userKey);
 });
 
 const PORT = process.env.PORT || 8790;
