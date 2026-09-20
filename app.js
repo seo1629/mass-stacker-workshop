@@ -1098,7 +1098,8 @@ function renderSpec(spec, touchedLevels, showDelta, { keepCamera = false } = {})
   const flashEdges = [];
   const { topY, bottomY } = stackFloors(spec.floors, (f, centerY) => {
     if (f.level === selectedLevel) {
-      addFloorMesh(f, centerY, 'selected');
+      // 면 수정 중이면 색을 한 단계 더 진하게 해서 모드가 바뀐 것을 바로 알 수 있게 한다.
+      addFloorMesh(f, centerY, faceEditLevel === f.level ? 'faceEdit' : 'selected');
       return;
     }
     const touched = touchedLevels && touchedLevels.has(f.level);
@@ -1154,8 +1155,8 @@ function stackFloors(floors, onFloor) {
 
 // style: 'solid' 확정 매스 / 'touched' 바뀐 층(빨간 선) / 'selected' 직접 편집 중인 층(청록)
 //        / 'ghost' 미리보기 중 원본(반투명 청록 윤곽)
-const FLOOR_FILL = { solid: 0xede8dc, touched: 0xf2d2c8, selected: 0xcfeaf0 };
-const FLOOR_EDGE = { solid: 0x0b1014, touched: 0xe2604a, selected: 0x1f8fa6 };
+const FLOOR_FILL = { solid: 0xede8dc, touched: 0xf2d2c8, selected: 0xcfeaf0, faceEdit: 0xbfe6ef };
+const FLOOR_EDGE = { solid: 0x0b1014, touched: 0xe2604a, selected: 0x1f8fa6, faceEdit: 0x0f6f84 };
 
 // 다각형 층은 shape를 그대로 세우고(중심 정렬 없음), 사각형 층은 기존처럼 박스로 만든다.
 function floorGeometry(f) {
@@ -1234,7 +1235,7 @@ function renderLayerPanel(spec, marks = new Map()) {
   layerPanel.innerHTML = ordered
     .map(
       (f) => `
-    <div class="layer-row${f.level < 0 ? ' basement' : ''}${marks.has(f.level) ? ' ' + marks.get(f.level) : ''}${f.level === selectedLevel ? ' selected' : ''}" data-level="${f.level}" role="button" tabindex="0" title="클릭해서 이 층 편집">
+    <div class="layer-row${f.level < 0 ? ' basement' : ''}${marks.has(f.level) ? ' ' + marks.get(f.level) : ''}${f.level === selectedLevel ? ' selected' : ''}" data-level="${f.level}" role="button" tabindex="0" title="${f.level === selectedLevel ? '다시 클릭하면 면 수정 켜기/끄기' : '클릭하면 이 층 선택'}">
       <span class="layer-lv">${floorLabel(f.level)}</span>
       <span class="layer-dim">${f.shape ? `${fmt(plateArea(f), 1)}<u>m²</u>` : `${fmt(f.width, 1)}×${fmt(f.depth, 1)}<u>m</u>`} · ${fmt(f.height, 1)}<u>m</u></span>
       ${f.use ? `<span class="layer-use">${escapeHtml(f.use)}</span>` : ''}
@@ -2296,6 +2297,14 @@ function selectFloor(level) {
   showEditHint();
 }
 
+// 면 수정 켜기/끄기 — 더블클릭, 층 목록 더블클릭, 안내 줄 버튼에서 모두 이 함수를 쓴다.
+function setFaceEdit(level) {
+  faceEditLevel = level;
+  if (level == null) faceHighlight.visible = false;
+  renderSpec(currentSpec, null, false, { keepCamera: true });
+  showEditHint();
+}
+
 // 3D 안내 한 줄 — 도구 창 대신 지금 할 수 있는 조작만 알려 준다.
 function showEditHint() {
   if (!editHint) return;
@@ -2304,10 +2313,12 @@ function showEditHint() {
     return;
   }
   const label = floorLabel(selectedLevel);
+  const on = faceEditLevel === selectedLevel;
   editHint.innerHTML =
-    faceEditLevel === selectedLevel
-      ? `<b>${label}</b> 면 수정 중 — 옆면을 끌면 폭·깊이, 윗면은 층고. 화살표로 이동. Esc로 해제`
-      : `<b>${label}</b> 선택됨 — 화살표로 이동, <b>더블클릭</b>하면 면을 수정할 수 있습니다`;
+    (on
+      ? `<b>${label}</b> 면 수정 중 — 옆면을 끌면 폭·깊이, 윗면은 층고. 화살표로 이동.`
+      : `<b>${label}</b> 선택됨 — 화살표로 이동, <b>더블클릭</b>하면 면을 수정합니다.`) +
+    ` <button type="button" id="faceEditToggle">${on ? '면 수정 끄기 (Esc)' : '면 수정 켜기'}</button>`;
   editHint.hidden = false;
 }
 
@@ -2396,11 +2407,23 @@ FE_FIELDS.forEach((key) => {
 
 feClose.addEventListener('click', () => selectFloor(null));
 
+editHint.addEventListener('click', (e) => {
+  if (!e.target.closest('#faceEditToggle') || selectedLevel == null) return;
+  setFaceEdit(faceEditLevel === selectedLevel ? null : selectedLevel);
+});
+
+
+// 층 목록: 처음 클릭하면 선택, 선택된 층을 다시 클릭하면 면 수정이 켜지고/꺼진다.
+// (클릭할 때마다 목록을 다시 그리기 때문에 더블클릭은 성립하지 않는다)
 layerPanel.addEventListener('click', (e) => {
   const row = e.target.closest('[data-level]');
   if (!row || !canEditFloors()) return;
   const level = Number(row.dataset.level);
-  selectFloor(level === selectedLevel ? null : level);
+  if (level !== selectedLevel) {
+    selectFloor(level);
+    return;
+  }
+  setFaceEdit(faceEditLevel === level ? null : level);
 });
 layerPanel.addEventListener('keydown', (e) => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-level]')) {
@@ -2432,8 +2455,8 @@ function makeArrow(dir, color) {
   const head = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.1, 12), mat);
   head.position.y = 1.55;
   // 집기 쉬우라고 보이지 않는 굵은 기둥을 덧댄다(얇은 화살표를 정확히 찍지 않아도 잡힌다)
-  const grab = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 2.2, 8), new THREE.MeshBasicMaterial({ visible: false }));
-  grab.position.y = 1.1;
+  const grab = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 2.1, 8), new THREE.MeshBasicMaterial({ visible: false }));
+  grab.position.y = 1.05;
   arrow.add(shaft, head, grab);
   arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
   arrow.userData.dir = dir.clone();
@@ -2639,12 +2662,22 @@ viewport.addEventListener('pointermove', (ev) => {
 });
 
 // 검볼 화살표 집기 — 화살표(보이지 않는 굵은 기둥 포함)만 대상으로 한다.
-function pickGizmo(ev) {
+// 화살표와 매스가 겹쳐 보일 때는 카메라에 더 가까운 쪽을 집는다.
+// (화살표는 얇아서 살짝 우선권만 준다 — GIZMO_BIAS 만큼)
+const GIZMO_BIAS = 0.4;
+function pickGizmoHit(ev) {
   if (!gizmoGroup?.visible || selectedLevel == null) return null;
   setRay(ev);
   gizmoGroup.updateMatrixWorld(true);
-  const hit = raycaster.intersectObjects(gizmoGroup.children, true)[0];
-  return hit ? hit.object.userData.gizmo || hit.object.parent : null;
+  return raycaster.intersectObjects(gizmoGroup.children, true)[0] || null;
+}
+
+function pickGizmo(ev) {
+  const g = pickGizmoHit(ev);
+  if (!g) return null;
+  const floorHit = pickFloor(ev); // setRay를 다시 하지만 같은 좌표라 결과는 같다
+  if (floorHit && floorHit.distance + GIZMO_BIAS < g.distance) return null; // 매스가 확실히 앞에 있으면 면 우선
+  return g.object.userData.gizmo || g.object.parent;
 }
 
 // 화살표를 잡는 순간의 "손잡은 위치"를 기억해 두고, 이후에는 그 차이만큼만 옮긴다.
@@ -2790,14 +2823,13 @@ viewport.addEventListener('dblclick', (ev) => {
   if (ev.target !== renderer.domElement || !canEditFloors()) return;
   const hit = pickFloor(ev);
   if (!hit) {
-    faceEditLevel = null;
-    showEditHint();
+    // 빈 곳을 더블클릭하면 선택된 층의 면 수정을 껐다 켠다(조준이 빗나가도 쓸 수 있게)
+    if (selectedLevel != null) setFaceEdit(faceEditLevel === selectedLevel ? null : selectedLevel);
     return;
   }
   const level = hit.object.userData.level;
   if (level !== selectedLevel) selectFloor(level);
-  faceEditLevel = level;
-  showEditHint();
+  setFaceEdit(level);
 });
 
 viewport.addEventListener('pointerup', (ev) => {
@@ -2820,11 +2852,7 @@ viewport.addEventListener('pointercancel', () => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !compareOverlay.hidden) return;
   if (drag) finishDrag(false);
-  else if (faceEditLevel != null) {
-    faceEditLevel = null;
-    faceHighlight.visible = false;
-    showEditHint();
-  } else if (selectedLevel != null) selectFloor(null);
+  else if (faceEditLevel != null) setFaceEdit(null); else if (selectedLevel != null) selectFloor(null);
 });
 
 // ---- 대지 찾기: 주소 → 필지 경계 + 토지특성 + 건축물대장 + 주변 건물 + 지적도 미니맵 ----

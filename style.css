@@ -848,3 +848,15 @@ html, body {
   cursor: pointer;
 }
 .retry-btn:hover { background: rgba(226, 96, 74, .12); }
+
+.edit-hint button {
+  margin-left: 8px;
+  background: transparent;
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.edit-hint button:hover { background: rgba(87, 194, 214, .14); }
