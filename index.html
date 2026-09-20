@@ -16,8 +16,75 @@
         <p class="meta">건물 정보를 읽고, 대화로 매스를 조절합니다.</p>
       </div>
 
+
+
       <section class="block">
-        <span class="tag">01 — 모델 연결</span>
+        <span class="tag">01 — 대지 찾기 (주소)</span>
+        <div class="search-line">
+          <input id="landQuery" class="input" placeholder="예: 서울 서초구 방배동 987-12" autocomplete="off" />
+          <button id="landSearchBtn" class="btn" type="button">검색</button>
+        </div>
+        <div class="search-results" id="landResults" hidden></div>
+        <div class="land-info" id="landInfo" hidden></div>
+        <div class="source-list" id="landSources" hidden></div>
+        <button id="landApplyBtn" class="btn primary" type="button" hidden>이 대지 경계·조건으로 초기 매스 만들기</button>
+      </section>
+
+      <section class="block">
+        <span class="tag">02 — 지적도 미니맵</span>
+        <section class="minimap in-rail" id="minimap" hidden>
+          <div class="mm-head">
+            <span class="mm-title" id="mmTitle">선택한 대지</span>
+            <button id="mmToggle" class="btn small" type="button">접기</button>
+          </div>
+          <div class="mm-body" id="mmBody">
+            <img id="mmImage" alt="선택한 대지 주변 지적도" />
+            <svg id="mmOverlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <p class="mm-fail" id="mmFail" hidden></p>
+          </div>
+          <p class="mm-caption" id="mmCaption"></p>
+        </section>
+        <p class="meta" id="mmEmpty">주소를 검색해 대지를 고르면 지적도와 주변 건물이 표시됩니다.</p>
+      </section>
+      <section class="block">
+        <span class="tag">03 — 대지 조건</span>
+        <label class="field-label" for="sampleSelect">대지 예시 선택</label>
+        <select id="sampleSelect" class="input"></select>
+
+        <div class="site-form" id="siteForm">
+          <label class="field" for="f_siteArea"><span>대지면적</span><input id="f_siteArea" class="input" type="number" inputmode="decimal" min="0" step="0.1" /><em>㎡</em></label>
+          <label class="field" for="f_coverageRatio"><span>건폐율</span><input id="f_coverageRatio" class="input" type="number" inputmode="decimal" min="0" max="100" step="1" /><em>%</em></label>
+          <label class="field" for="f_farRatio"><span>용적률</span><input id="f_farRatio" class="input" type="number" inputmode="decimal" min="0" step="10" /><em>%</em></label>
+          <label class="field" for="f_maxFloors"><span>최대 층수</span><input id="f_maxFloors" class="input" type="number" inputmode="numeric" min="1" step="1" placeholder="제한 없음" /><em>층</em></label>
+          <label class="field" for="f_maxHeight"><span>최고 높이</span><input id="f_maxHeight" class="input" type="number" inputmode="decimal" min="0" step="0.5" placeholder="제한 없음" /><em>m</em></label>
+          <label class="field" for="f_floorHeight"><span>층고</span><input id="f_floorHeight" class="input" type="number" inputmode="decimal" min="2" max="14" step="0.1" /><em>m</em></label>
+          <label class="field" for="f_setback"><span>경계 이격</span><input id="f_setback" class="input" type="number" inputmode="decimal" min="0" max="20" step="0.1" placeholder="1.0" /><em>m</em></label>
+        </div>
+        <div class="sun-row" id="sunRow">
+          <span class="field-label">정북 일조 사선</span>
+          <div class="sun-buttons">
+            <button type="button" class="sun-btn" data-sun="after">10m 기준 (2023~)</button>
+            <button type="button" class="sun-btn" data-sun="before">9m 기준 (개정 전)</button>
+            <button type="button" class="sun-btn" data-sun="off">적용 안 함</button>
+          </div>
+          <p class="meta" id="sunNote"></p>
+        </div>
+        <p class="site-derived" id="siteDerived" aria-live="polite"></p>
+        <div class="field-error" id="siteError" role="alert" hidden></div>
+        <button id="generateBtn" class="btn primary">이 조건으로 매스 생성</button>
+        <div class="site-card" id="siteCard" hidden></div>
+
+        <details class="json-adv">
+          <summary>고급 — JSON으로 직접 편집</summary>
+          <textarea id="siteJson" class="input mono" spellcheck="false" rows="8" aria-label="대지 조건 JSON"></textarea>
+        </details>
+        <button id="compareBtn" class="btn" type="button" disabled>AI로 대안 3안 만들어 비교</button>
+        <p class="meta">현재 설계의 대지 조건으로 균형형 · 테라스형 · 포디움+타워형을 만들어 나란히 비교합니다.</p>
+      </section>
+
+
+      <details class="block settings-block">
+        <summary><span class="tag">설정 — 모델 · API 키</span></summary>
         <select id="provider" class="input">
           <option value="gemini">Gemini</option>
           <option value="anthropic">Anthropic (Claude)</option>
@@ -68,60 +135,7 @@
           </div>
           <p class="meta">키는 이 탭에만 저장되고(탭을 닫으면 사라짐), 화면과 기록에는 가려서 표시됩니다.</p>
         </details>
-      </section>
-
-      <section class="block">
-        <span class="tag">02 — 대지 찾기 (주소)</span>
-        <div class="search-line">
-          <input id="landQuery" class="input" placeholder="예: 서울 서초구 방배동 987-12" autocomplete="off" />
-          <button id="landSearchBtn" class="btn" type="button">검색</button>
-        </div>
-        <div class="search-results" id="landResults" hidden></div>
-        <div class="land-info" id="landInfo" hidden></div>
-        <div class="source-list" id="landSources" hidden></div>
-        <button id="landApplyBtn" class="btn primary" type="button" hidden>이 대지 경계·조건으로 초기 매스 만들기</button>
-      </section>
-
-      <section class="block">
-        <span class="tag">03 — 대지 조건</span>
-        <label class="field-label" for="sampleSelect">대지 예시 선택</label>
-        <select id="sampleSelect" class="input"></select>
-
-        <div class="site-form" id="siteForm">
-          <label class="field" for="f_siteArea"><span>대지면적</span><input id="f_siteArea" class="input" type="number" inputmode="decimal" min="0" step="0.1" /><em>㎡</em></label>
-          <label class="field" for="f_coverageRatio"><span>건폐율</span><input id="f_coverageRatio" class="input" type="number" inputmode="decimal" min="0" max="100" step="1" /><em>%</em></label>
-          <label class="field" for="f_farRatio"><span>용적률</span><input id="f_farRatio" class="input" type="number" inputmode="decimal" min="0" step="10" /><em>%</em></label>
-          <label class="field" for="f_maxFloors"><span>최대 층수</span><input id="f_maxFloors" class="input" type="number" inputmode="numeric" min="1" step="1" placeholder="제한 없음" /><em>층</em></label>
-          <label class="field" for="f_maxHeight"><span>최고 높이</span><input id="f_maxHeight" class="input" type="number" inputmode="decimal" min="0" step="0.5" placeholder="제한 없음" /><em>m</em></label>
-          <label class="field" for="f_floorHeight"><span>층고</span><input id="f_floorHeight" class="input" type="number" inputmode="decimal" min="2" max="14" step="0.1" /><em>m</em></label>
-          <label class="field" for="f_setback"><span>경계 이격</span><input id="f_setback" class="input" type="number" inputmode="decimal" min="0" max="20" step="0.1" placeholder="1.0" /><em>m</em></label>
-        </div>
-        <div class="sun-row" id="sunRow">
-          <span class="field-label">정북 일조 사선</span>
-          <div class="sun-buttons">
-            <button type="button" class="sun-btn" data-sun="after">10m 기준 (2023~)</button>
-            <button type="button" class="sun-btn" data-sun="before">9m 기준 (개정 전)</button>
-            <button type="button" class="sun-btn" data-sun="off">적용 안 함</button>
-          </div>
-          <p class="meta" id="sunNote"></p>
-        </div>
-        <p class="site-derived" id="siteDerived" aria-live="polite"></p>
-        <div class="field-error" id="siteError" role="alert" hidden></div>
-        <button id="generateBtn" class="btn primary">이 조건으로 매스 생성</button>
-        <div class="site-card" id="siteCard" hidden></div>
-
-        <details class="json-adv">
-          <summary>고급 — JSON으로 직접 편집</summary>
-          <textarea id="siteJson" class="input mono" spellcheck="false" rows="8" aria-label="대지 조건 JSON"></textarea>
-        </details>
-        <button id="compareBtn" class="btn" type="button" disabled>대안 3가지 비교</button>
-        <p class="meta">현재 설계의 대지 조건으로 균형형 · 테라스형 · 포디움+타워형을 만들어 나란히 비교합니다.</p>
-      </section>
-
-      <section class="block">
-        <span class="tag">04 — 빠른 요청</span>
-        <div class="quick-list" id="quickList"></div>
-      </section>
+      </details>
     </aside>
 
     <main class="stage">
@@ -131,6 +145,8 @@
           <button class="vbtn" data-view="bird">조감 60°</button>
           <button class="vbtn" data-view="close">근경 28°</button>
           <button class="vbtn" data-view="front">입면 0°</button>
+        </div>
+        <div class="view-extra">
           <button id="neighborsBtn" class="vbtn on" type="button" hidden>주변 건물 끄기</button>
         </div>
         <div class="empty-state" id="emptyState" hidden>
@@ -155,18 +171,8 @@
           <p class="fe-hint">3D에서 이 층의 <b>옆면</b>을 끌면 폭·깊이, <b>윗면</b>을 끌면 층고가 바뀝니다(반대쪽 면은 고정). 0.1m 단위, Shift를 누르면 1m 단위.</p>
         </section>
         <div class="drag-label" id="dragLabel" hidden></div>
-        <section class="minimap" id="minimap" hidden>
-          <div class="mm-head">
-            <span class="tag">지적도</span>
-            <button id="mmToggle" class="btn small" type="button">접기</button>
-          </div>
-          <div class="mm-body" id="mmBody">
-            <img id="mmImage" alt="선택한 대지 주변 지적도" />
-            <svg id="mmOverlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
-            <p class="mm-fail" id="mmFail" hidden></p>
-          </div>
-          <p class="mm-caption" id="mmCaption"></p>
-        </section>
+        <p class="edit-hint" id="editHint" hidden></p>
+
         <section class="preview-panel" id="previewPanel" aria-label="AI 수정안 미리보기" hidden>
           <div class="preview-head">
             <span class="tag" id="previewTitle">AI 수정안 미리보기 · 아직 적용 전</span>
@@ -242,6 +248,10 @@
         <button id="consoleToggle" class="btn small" type="button">콘솔</button>
       </div>
       <div class="log" id="chatLog"></div>
+      <div class="chat-quick">
+        <span class="tag">빠른 요청</span>
+        <div class="quick-list" id="quickList"></div>
+      </div>
       <form class="composer" id="composerForm">
         <textarea id="chatInput" rows="2" placeholder="예: 3층부터는 대지를 꽉 채우고, 그 위로는 절반 크기로 후퇴시켜줘"></textarea>
         <button id="chatSendBtn" class="btn primary" type="submit">보내기</button>
@@ -257,7 +267,12 @@
       </div>
       <button id="compareClose" class="btn small" type="button">닫기</button>
     </div>
-    <p class="meta compare-hint">한 화면을 드래그하면 세 안이 같은 각도로 함께 돌아갑니다. 마음에 드는 안의 "이 안 채택"을 누르면 현재 설계가 됩니다(되돌리기 가능).</p>
+    <form class="compare-ask" id="compareAsk">
+      <input id="compareInput" class="input" placeholder="어떤 안을 볼까요? 예: 1층은 상가로 비우고 위는 원룸으로, 주차를 고려해서" autocomplete="off" />
+      <button id="compareRun" class="btn primary" type="submit">3안 만들기</button>
+      <button id="compareRules" class="btn" type="button" title="AI 없이 규칙으로 만든 기본 3안">기본 3안</button>
+    </form>
+    <p class="meta compare-hint">현재안과 함께 비교합니다. 한 화면을 드래그하면 모든 안이 같은 각도로 돌아갑니다. "이 안 채택"을 누르면 현재 설계가 됩니다(되돌리기 가능).</p>
     <div class="compare-grid" id="compareGrid"></div>
   </div>
 

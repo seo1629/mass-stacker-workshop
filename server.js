@@ -54,25 +54,51 @@ const EDIT_SCHEMA = {
   required: ['interpretation', 'explanation', 'changes']
 };
 
+// 실제 필지에서 만든 층은 다각형(shape)이라 폭·깊이가 없다. 외접 사각형과 바닥면적으로 바꿔서 알려 준다.
+function floorForPrompt(f) {
+  const base = {
+    level: f.level,
+    label: f.level > 0 ? `${f.level}F` : `B${-f.level}`,
+    height: +f.height.toFixed(1),
+    use: f.use || ''
+  };
+  if (f.shape?.length) {
+    const xs = f.shape.map((p) => p[0]);
+    const zs = f.shape.map((p) => p[1]);
+    let a = 0;
+    for (let i = 0, j = f.shape.length - 1; i < f.shape.length; j = i++) {
+      a += f.shape[j][0] * f.shape[i][1] - f.shape[i][0] * f.shape[j][1];
+    }
+    return {
+      ...base,
+      shape: '대지 모양을 따르는 다각형',
+      width: +(Math.max(...xs) - Math.min(...xs)).toFixed(1),
+      depth: +(Math.max(...zs) - Math.min(...zs)).toFixed(1),
+      floorArea: +Math.abs(a / 2).toFixed(1),
+      offsetX: +((Math.max(...xs) + Math.min(...xs)) / 2).toFixed(1),
+      offsetZ: +((Math.max(...zs) + Math.min(...zs)) / 2).toFixed(1),
+      rotationDeg: 0
+    };
+  }
+  return {
+    ...base,
+    width: +f.width.toFixed(1),
+    depth: +f.depth.toFixed(1),
+    offsetX: +(f.offsetX || 0).toFixed(1),
+    offsetZ: +(f.offsetZ || 0).toFixed(1),
+    rotationDeg: Math.round(f.rotationDeg || 0)
+  };
+}
+
 function currentModelText(spec) {
   const aboveLevels = spec.floors.filter((f) => f.level > 0).map((f) => f.level);
   const basementLevels = spec.floors.filter((f) => f.level < 0).map((f) => f.level);
   return JSON.stringify(
     {
-      site: { width: spec.site.siteWidth, depth: spec.site.siteDepth, area: spec.site.siteArea },
+      site: { width: spec.site.siteWidth, depth: spec.site.siteDepth, area: spec.site.siteArea, shape: spec.site.boundary?.length ? '실제 필지 다각형' : '사각형' },
       topFloor: aboveLevels.length ? Math.max(...aboveLevels) : 0,
       deepestBasement: basementLevels.length ? -Math.min(...basementLevels) : 0,
-      floors: spec.floors.map((f) => ({
-        level: f.level,
-        label: f.level > 0 ? `${f.level}F` : `B${-f.level}`,
-        width: +f.width.toFixed(1),
-        depth: +f.depth.toFixed(1),
-        height: +f.height.toFixed(1),
-        offsetX: +(f.offsetX || 0).toFixed(1),
-        offsetZ: +(f.offsetZ || 0).toFixed(1),
-        rotationDeg: Math.round(f.rotationDeg || 0),
-        use: f.use || ''
-      }))
+      floors: spec.floors.map(floorForPrompt)
     },
     null,
     2
@@ -146,15 +172,15 @@ const EDIT_TOOL = {
 
 // 콘솔 패널에 그대로 내려보낼 디버그 정보. API 키는 URL 쿼리(Gemini)/헤더(Anthropic)에만 있고
 // 아래 request 바디에는 절대 포함되지 않으므로 브라우저로 내려보내도 안전하다.
-async function callGemini(spec, instruction, model, apiKey) {
+async function callGemini({ prompt, schema }, model, apiKey) {
   const useModel = (model && model.trim()) || process.env.GEMINI_MODEL || 'gemini-3.7-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(useModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const body = {
-    contents: [{ role: 'user', parts: [{ text: buildPrompt(spec, instruction) }] }],
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: {
       responseMimeType: 'application/json',
-      responseSchema: EDIT_SCHEMA,
+      responseSchema: schema,
       maxOutputTokens: 8192
     }
   };
@@ -190,14 +216,14 @@ async function callGemini(spec, instruction, model, apiKey) {
   return { result: JSON.parse(text), debug: { ...debugBase, response: data } };
 }
 
-async function callAnthropic(spec, instruction, model, apiKey) {
+async function callAnthropic({ prompt, schema, toolName, toolDesc }, model, apiKey) {
   const useModel = (model && model.trim()) || process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
   const body = {
     model: useModel,
     max_tokens: 8192,
-    tools: [EDIT_TOOL],
-    tool_choice: { type: 'tool', name: 'update_mass' },
-    messages: [{ role: 'user', content: buildPrompt(spec, instruction) }]
+    tools: [{ name: toolName, description: toolDesc, input_schema: schema }],
+    tool_choice: { type: 'tool', name: toolName },
+    messages: [{ role: 'user', content: prompt }]
   };
   const debugBase = { provider: 'anthropic', model: useModel, request: body };
 
@@ -234,6 +260,59 @@ async function callAnthropic(spec, instruction, model, apiKey) {
   return { result: toolUse.input, debug: { ...debugBase, response: data } };
 }
 
+// ---- 대안 3안: 같은 대지 조건에서 요청에 맞는 서로 다른 세 가지 안 ----
+const ALT_SCHEMA = {
+  type: 'object',
+  properties: {
+    options: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          concept: { type: 'string' },
+          pros: { type: 'array', items: { type: 'string' } },
+          cons: { type: 'array', items: { type: 'string' } },
+          changes: EDIT_SCHEMA.properties.changes
+        },
+        required: ['name', 'concept', 'pros', 'cons', 'changes']
+      }
+    }
+  },
+  required: ['options']
+};
+
+const ALT_TOOL = {
+  name: 'make_options',
+  description: '같은 대지에서 요청에 맞는 서로 다른 세 가지 매스 안을 만든다.',
+  input_schema: ALT_SCHEMA
+};
+
+function buildAltPrompt(spec, instruction) {
+  return `${EDIT_SYS}
+
+지금은 "대안 3안 만들기" 작업이다. 위 규칙(좌표계·층 번호·changes 형식)을 그대로 지키되, 아래를 반드시 따른다:
+- 현재 매스를 기준으로 한 변경 명령(changes)을 **안마다 따로** 낸다. 각 안은 현재 매스에서 출발해 독립적으로 적용된다.
+- 세 안은 형태 전략이 **뚜렷하게 달라야 한다**. 예: 층수·층고를 바꾼 안 / 상부를 후퇴시킨 안 / 저층부를 넓히고 상부를 세운 안 /
+  매스를 나누거나 방향을 돌린 안 등. 이름만 다르고 형태가 비슷한 안은 만들지 마라.
+- 세 안 모두 사용자의 요청을 만족해야 한다. 요청이 비어 있으면 대지 조건을 살리는 서로 다른 세 가지 해석을 제시한다.
+- name: 6자 이내 짧은 이름. concept: 이 안의 의도 한 문장.
+- pros / cons: 각각 2~3개. 설계·사용 측면에서 쉬운 말로. 숫자(면적·층수)는 클라이언트가 계산하므로 쓰지 마라.
+
+참고(법규·사용자 입력 상한 — 면적은 계산하지 말고 참고만 하라):${spec.site.name ? `\n- 대지: ${spec.site.name}${spec.site.zoning ? ` (${spec.site.zoning})` : ''}` : ''}
+- 대지면적: ${spec.site.siteArea} ㎡
+- 건폐율 상한: ${spec.site.coverageRatio}% (최대 건축면적 ${spec.derived.maxBuildingArea} ㎡)
+- 용적률 상한: ${spec.site.farRatio}% (최대 연면적 ${spec.derived.maxFloorArea} ㎡)
+- 층수 상한: ${spec.site.maxFloors ?? '제한없음'}
+- 최고 높이 상한(지상층 층고 합): ${spec.site.maxHeight != null ? spec.site.maxHeight + ' m' : '제한없음'}
+
+현재 매스:
+${currentModelText(spec)}
+
+요청:
+${instruction || '(특별한 요청 없음 — 이 대지에서 해볼 만한 서로 다른 세 가지 안)'}`;
+}
+
 // ---- API 키: .env 키를 먼저 쓰고, 없거나 인증에 실패하면 사용자가 화면에서 입력한 키로 다시 시도 ----
 // 키 값 자체는 로그에도 응답에도 담지 않는다(어느 쪽 키를 썼는지만 keySource로 알린다).
 // .env.example의 예시 문구(your_..._here)가 그대로 남아 있으면 키가 없는 것으로 본다.
@@ -250,7 +329,7 @@ function isAuthError(status, text) {
 
 const PROVIDER_LABEL = { gemini: 'Gemini', anthropic: 'Claude' };
 
-async function callProvider(provider, spec, instruction, model, userKey) {
+async function callProvider(provider, job, model, userKey) {
   const envKey = realKey(provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.GEMINI_API_KEY);
   const label = PROVIDER_LABEL[provider];
   const candidates = [];
@@ -269,8 +348,8 @@ async function callProvider(provider, spec, instruction, model, userKey) {
     const { source, key } = candidates[i];
     try {
       const out = provider === 'anthropic'
-        ? await callAnthropic(spec, instruction, model, key)
-        : await callGemini(spec, instruction, model, key);
+        ? await callAnthropic(job, model, key)
+        : await callGemini(job, model, key);
       out.debug.keySource = source;
       if (i > 0) out.debug.keyFallback = true;
       return out;
@@ -420,8 +499,7 @@ app.post('/api/generate', async (req, res) => {
 
     const { result, debug } = await callProvider(
       provider === 'anthropic' ? 'anthropic' : 'gemini',
-      currentSpec,
-      instruction,
+      { prompt: buildPrompt(currentSpec, instruction), schema: EDIT_SCHEMA, toolName: EDIT_TOOL.name, toolDesc: EDIT_TOOL.description },
       model,
       typeof key === 'string' ? key : ''
     );
@@ -437,6 +515,33 @@ app.post('/api/generate', async (req, res) => {
 registerLandRoutes(app, (kind, userKey) => {
   const envKey = realKey(kind === 'vworld' ? process.env.VWORLD_API_KEY : process.env.DATA_GO_KR_SERVICE_KEY);
   return envKey || realKey(userKey);
+});
+
+app.post('/api/alternatives', async (req, res) => {
+  try {
+    const { currentSpec, instruction, model, provider, key } = req.body || {};
+    if (!currentSpec) return res.status(400).json({ error: 'currentSpec 값이 필요합니다.' });
+
+    const { result, debug } = await callProvider(
+      provider === 'anthropic' ? 'anthropic' : 'gemini',
+      { prompt: buildAltPrompt(currentSpec, instruction || ''), schema: ALT_SCHEMA, toolName: ALT_TOOL.name, toolDesc: ALT_TOOL.description },
+      model,
+      typeof key === 'string' ? key : ''
+    );
+
+    const options = (result.options || []).slice(0, 3).map((o) => ({
+      name: stripArtifacts(o.name) || '대안',
+      concept: stripArtifacts(o.concept) || '',
+      pros: (o.pros || []).map(stripArtifacts).filter(Boolean),
+      cons: (o.cons || []).map(stripArtifacts).filter(Boolean),
+      changes: sanitizeResult({ changes: o.changes || [] }).changes
+    }));
+    if (!options.length) throw { status: 502, message: '모델이 대안을 만들지 못했습니다. 요청을 조금 더 구체적으로 적어 보세요.', debug };
+
+    res.json({ options, _debug: debug });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || String(e), _debug: e.debug });
+  }
 });
 
 const PORT = process.env.PORT || 8790;

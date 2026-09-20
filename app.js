@@ -34,6 +34,11 @@ const compareOverlay = el('compareOverlay');
 const compareGrid = el('compareGrid');
 const compareSite = el('compareSite');
 const compareClose = el('compareClose');
+const compareAsk = el('compareAsk');
+const compareInput = el('compareInput');
+const compareRun = el('compareRun');
+const compareRules = el('compareRules');
+const mmEmpty = el('mmEmpty');
 const previewPanel = el('previewPanel');
 const previewFloors = el('previewFloors');
 const previewTotals = el('previewTotals');
@@ -48,6 +53,7 @@ const feError = el('feError');
 const feWarn = el('feWarn');
 const feClose = el('feClose');
 const dragLabel = el('dragLabel');
+const editHint = el('editHint');
 const FE_FIELDS = ['width', 'depth', 'height', 'offsetX', 'offsetZ'];
 const landQuery = el('landQuery');
 const landSearchBtn = el('landSearchBtn');
@@ -61,6 +67,7 @@ const mmOverlay = el('mmOverlay');
 const mmFail = el('mmFail');
 const mmCaption = el('mmCaption');
 const mmToggle = el('mmToggle');
+const mmTitle = el('mmTitle');
 const neighborsBtn = el('neighborsBtn');
 
 // ---- LLM 콘솔: 실제로 LLM API에 보낸 요청/받은 응답을 그대로 보여준다 ----
@@ -568,6 +575,8 @@ let chatEntries = []; // 새로고침 후 복원할 채팅 로그: { kind, html,
 let pendingProposal = null; // 검토 중인 AI 수정안(적용 전): { floors, touched, diff, interpretation, instructions, warnings }
 let busy = false; // LLM 응답 대기 중
 let selectedLevel = null; // 직접 편집 중인 층 번호
+let faceEditLevel = null; // 더블클릭으로 "면 수정"을 켠 층
+let gizmoGroup = null; // 이동 화살표(검볼) — 처음 쓸 때 만든다
 let landData = null; // 조회한 대지 자료: { lon, lat, parcel, land, zoneRatios, buildings, neighbors, sources, boundaryLocal }
 let neighborGroup = null; // 주변 건물 매스(선택 대상이 아니라 massGroup과 따로 둔다)
 let showNeighbors = true;
@@ -688,10 +697,12 @@ const MAX_CHAT = 200;
 const cloneSpec = (spec) => JSON.parse(JSON.stringify(spec));
 
 function isValidFloor(f) {
-  return (
-    f && Number.isInteger(f.level) && f.level !== 0 &&
-    [f.width, f.depth, f.height].every((v) => isNum(v) && v > 0)
-  );
+  if (!f || !Number.isInteger(f.level) || f.level === 0 || !isNum(f.height) || f.height <= 0) return false;
+  // 다각형 층(shape)은 좌표 목록이, 사각형 층은 폭·깊이가 있어야 한다.
+  if (Array.isArray(f.shape)) {
+    return f.shape.length >= 3 && f.shape.every((p) => Array.isArray(p) && p.length === 2 && p.every(isNum));
+  }
+  return isNum(f.width) && f.width > 0 && isNum(f.depth) && f.depth > 0;
 }
 
 function isValidSpec(spec) {
@@ -1110,6 +1121,7 @@ function renderSpec(spec, touchedLevels, showDelta, { keepCamera = false } = {})
   renderLayerPanel(spec);
   renderTitleblock(!!showDelta, spec);
   updateFloorEditor(spec);
+  updateGizmo(spec);
 }
 
 // 실제 필지 경계(boundary, 미터 좌표)가 있으면 그 모양 그대로, 없으면 사각형으로 대지선을 그린다.
@@ -1524,6 +1536,14 @@ function diffFloors(before, after) {
     const near = (x, y, tol = 0.05) => Math.abs((x || 0) - (y || 0)) < tol;
     if (b.shape || f.shape) {
       if (!near(plateArea(b), plateArea(f), 0.5)) diffs.push(`바닥면적 ${fmt(plateArea(b), 1)} → ${fmt(plateArea(f), 1)}㎡`);
+      // 면적이 같아도 옮겼을 수 있으므로 중심 위치도 비교한다.
+      if (b.shape && f.shape) {
+        const [bx, bz] = polyCentroid(b.shape);
+        const [fx, fz] = polyCentroid(f.shape);
+        if (!near(bx, fx, 0.05) || !near(bz, fz, 0.05)) {
+          diffs.push(`위치 (${fmt(bx, 1)}, ${fmt(bz, 1)}) → (${fmt(fx, 1)}, ${fmt(fz, 1)})`);
+        }
+      }
     } else if (!near(b.width, f.width) || !near(b.depth, f.depth)) {
       diffs.push(`평면 ${fmt(b.width, 1)}×${fmt(b.depth, 1)} → ${fmt(f.width, 1)}×${fmt(f.depth, 1)}m`);
     }
@@ -1902,21 +1922,16 @@ previewWarnings.addEventListener('click', (e) => {
 function buildMassObject(spec) {
   const group = new THREE.Group();
   const site = spec.site;
-  let sw = site.siteWidth;
-  let sd = site.siteDepth;
-  if (!sw || !sd) sw = sd = Math.sqrt(site.siteArea);
+  const { sw, sd } = siteDims(site);
 
-  group.add(new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(sw, 0.01, sd)),
-    new THREE.LineBasicMaterial({ color: 0x57c2d6 })
-  ));
+  group.add(buildSiteOutline(site, sw, sd)); // 실제 필지면 그 모양 그대로
   group.add(new THREE.GridHelper(Math.max(sw, sd) * 2, 20, 0x20313a, 0x1a272e));
 
   const addFloor = (f, centerY) => {
-    const geo = new THREE.BoxGeometry(f.width, f.height, f.depth);
+    const geo = floorGeometry(f); // 다각형 층도 그대로 세운다
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xede8dc, roughness: 0.85, metalness: 0.05 }));
-    mesh.position.set(f.offsetX || 0, centerY, f.offsetZ || 0);
-    mesh.rotation.y = THREE.MathUtils.degToRad(f.rotationDeg || 0);
+    mesh.position.set(f.shape ? 0 : f.offsetX || 0, centerY, f.shape ? 0 : f.offsetZ || 0);
+    mesh.rotation.y = f.shape ? 0 : THREE.MathUtils.degToRad(f.rotationDeg || 0);
     const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0x0b1014 }));
     line.position.copy(mesh.position);
     line.rotation.copy(mesh.rotation);
@@ -1992,25 +2007,47 @@ function metricRows(values, site, derived, best) {
     <tr><th>층 바닥 크기</th><td>${fmt(values.minPlate, 1)} ~ ${fmt(values.maxPlate, 1)}㎡</td></tr>`;
 }
 
+// 비교 카드 목록: 첫 장은 항상 현재안, 그 뒤가 대안이다.
+// { key, name, sub, concept, pros, cons, spec, current?, note? }
 let compareAlts = [];
+let lastCompareAsk = '';
 
-function openCompare() {
-  if (!currentSpec) return;
-  const site = currentSpec.site;
-  compareAlts = buildAlternativeSpecs(site);
-  const { maxBuildingArea, maxFloorArea } = compareAlts[0].spec.derived;
-  compareSite.textContent =
-    `대지 ${fmt(site.siteArea, 1)}㎡ · 건폐율 ${fmt(site.coverageRatio, 0)}% (최대 ${fmt(maxBuildingArea, 1)}㎡) · ` +
-    `용적률 ${fmt(site.farRatio, 0)}% (최대 ${fmt(maxFloorArea, 1)}㎡)` +
+function currentCard() {
+  return {
+    key: 'current',
+    name: '현재안',
+    sub: `지금 화면의 설계 (REV ${String(rev).padStart(2, '0')})`,
+    concept: '비교 기준입니다. 대안이 마음에 들지 않으면 그대로 두면 됩니다.',
+    pros: [],
+    cons: [],
+    spec: currentSpec,
+    current: true
+  };
+}
+
+function compareSiteText(site, derived) {
+  return (
+    `대지 ${fmt(site.siteArea, 1)}㎡ · 건폐율 ${fmt(site.coverageRatio, 0)}% (최대 ${fmt(derived.maxBuildingArea, 1)}㎡) · ` +
+    `용적률 ${fmt(site.farRatio, 0)}% (최대 ${fmt(derived.maxFloorArea, 1)}㎡)` +
     (site.maxFloors ? ` · 최대 ${site.maxFloors}층` : '') +
-    (site.maxHeight ? ` · 최고 높이 ${site.maxHeight}m` : '') + ` · 층고 ${fmt(site.floorHeight || 3.3, 1)}m`;
+    (site.maxHeight ? ` · 최고 높이 ${site.maxHeight}m` : '') +
+    ` · 층고 ${fmt(site.floorHeight || 3.3, 1)}m` +
+    (site.boundary?.length ? ' · 실제 필지 경계' : '')
+  );
+}
 
-  const values = compareAlts.map((a) => {
+function renderCompareCards(cards) {
+  disposeCompareViews();
+  compareAlts = cards;
+  const site = currentSpec.site;
+  compareSite.textContent = compareSiteText(site, currentSpec.derived);
+
+  const values = cards.map((a) => {
     const v = computeValues(site, a.spec.floors);
     const plates = a.spec.floors.filter((f) => f.level > 0).map(plateArea);
-    return { ...v, minPlate: Math.min(...plates), maxPlate: Math.max(...plates) };
+    return { ...v, minPlate: plates.length ? Math.min(...plates) : 0, maxPlate: plates.length ? Math.max(...plates) : 0 };
   });
-  // 세 안 사이에 의미 있는 차이(최댓값의 1% 이상)가 있을 때만 "가장 ~" 표시를 붙인다.
+  // 안들 사이에 의미 있는 차이(최댓값의 1% 이상)가 있을 때만 "가장 ~" 표시를 붙인다.
   const pickBest = (arr, dir) => {
     const hi = Math.max(...arr);
     const target = dir > 0 ? hi : Math.min(...arr);
@@ -2021,47 +2058,145 @@ function openCompare() {
   const bestLow = pickBest(values.map((v) => v.height), -1);
   const bestOpen = pickBest(values.map((v) => v.siteArea - v.buildArea), 1);
 
-  compareGrid.innerHTML = compareAlts
-    .map(
-      (a, i) => `
-    <article class="alt-card" data-alt="${a.key}">
+  compareGrid.innerHTML = cards
+    .map((a, i) => {
+      const label = a.current ? '현재안' : `안 ${String.fromCharCode(64 + i)}`;
+      const text =
+        (a.concept ? `<h3>의도</h3><p>${escapeHtml(a.concept)}</p>` : '') +
+        (a.pros?.length ? `<h3 class="pro">장점</h3><ul>${a.pros.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>` : '') +
+        (a.cons?.length ? `<h3 class="con">단점</h3><ul>${a.cons.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>` : '') +
+        (a.note ? `<p class="alt-fail">${escapeHtml(a.note)}</p>` : '');
+      return `
+    <article class="alt-card${a.current ? ' current' : ''}" data-alt="${escapeHtml(a.key)}">
       <div class="alt-head">
-        <span class="tag">안 ${String.fromCharCode(65 + i)}</span>
+        <span class="tag">${label}</span>
         <h2>${escapeHtml(a.name)}</h2>
-        <p class="alt-sub">${escapeHtml(a.sub)}</p>
+        <p class="alt-sub">${escapeHtml(a.sub || '')}</p>
       </div>
       <div class="alt-view" aria-label="${escapeHtml(a.name)} 3D 미리보기"></div>
       <table class="alt-metrics">${metricRows(values[i], site, a.spec.derived, { gfa: bestGfa[i], lowest: bestLow[i], open: bestOpen[i] })}</table>
-      <div class="alt-text">
-        <h3>의도</h3><p>${escapeHtml(a.intent)}</p>
-        <h3 class="pro">장점</h3><ul>${a.pros.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>
-        <h3 class="con">단점</h3><ul>${a.cons.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>
-      </div>
-      <div class="alt-foot"><button class="btn primary" type="button" data-adopt="${i}">이 안 채택</button></div>
-    </article>`
-    )
+      <div class="alt-text">${text}</div>
+      <div class="alt-foot">${
+        a.current
+          ? '<button class="btn" type="button" disabled>현재 설계</button>'
+          : `<button class="btn primary" type="button" data-adopt="${i}">이 안 채택</button>`
+      }</div>
+    </article>`;
+    })
     .join('');
 
-  compareOverlay.hidden = false;
-
-  // 세 안을 같은 축척으로 보이도록 가장 크고 높은 안에 맞춰 카메라 거리를 공통으로 잡는다.
-  const sizes = compareAlts.map((a) => buildMassObject(a.spec));
-  const maxH = Math.max(...sizes.map((s) => s.height));
-  const maxDiag = Math.max(...sizes.map((s) => s.diag));
+  // 모든 안을 같은 축척으로 — 가장 크고 높은 안에 맞춰 카메라 거리를 공통으로 잡는다.
+  const sizes = cards.map((a) => buildMassObject(a.spec));
+  const maxH = Math.max(...sizes.map((x) => x.height));
+  const maxDiag = Math.max(...sizes.map((x) => x.diag));
   const frame = { targetY: maxH / 2, radius: Math.max(maxDiag, maxH, 10) * 1.5 + 6 };
-
-  compareViews = [...compareGrid.querySelectorAll('.alt-view')].map((c, i) => createCompareView(c, compareAlts[i].spec, frame));
+  compareViews = [...compareGrid.querySelectorAll('.alt-view')].map((c, i) => createCompareView(c, cards[i].spec, frame));
   compareViews.forEach((v) => v.controls.addEventListener('change', () => syncViews(v)));
-  compareClose.focus();
 }
 
-function closeCompare() {
+// LLM에게 "요청에 맞는 서로 다른 세 안"을 받아 현재안과 나란히 놓는다.
+async function requestAlternatives(instruction) {
+  compareRun.disabled = true;
+  compareRules.disabled = true;
+  compareGrid.innerHTML = '<p class="alt-busy">요청에 맞는 세 가지 안을 만드는 중입니다...</p>';
+  disposeCompareViews();
+
+  try {
+    const res = await fetch('/api/alternatives', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        currentSpec,
+        instruction,
+        model: modelInput.value.trim(),
+        provider: providerSelect.value,
+        key: userKeys[providerSelect.value] || ''
+      })
+    });
+    const data = await res.json();
+    const debug = data._debug;
+    logConsole({
+      ok: res.ok,
+      status: res.status,
+      provider: debug?.provider || providerSelect.value,
+      model: debug?.model || modelInput.value.trim(),
+      request: debug?.request,
+      response: debug?.response
+    });
+    if (!res.ok) throw new Error(data.error || `대안 생성 실패 (${res.status})`);
+
+    const cards = data.options.map((o, i) => {
+      const changes = (o.changes || []).filter((c) => !isNoop(c, currentSpec.floors));
+      const { floors } = applyChanges(currentSpec.floors, changes);
+      return {
+        key: `llm${i}`,
+        name: o.name,
+        sub: changes.length ? `${changes.length}개 층 변경` : '현재안과 같음',
+        concept: o.concept,
+        pros: o.pros,
+        cons: o.cons,
+        spec: { ...currentSpec, floors },
+        note: changes.length ? '' : '모델이 현재안과 같은 형태를 냈습니다. 요청을 더 구체적으로 적어 보세요.'
+      };
+    });
+    lastCompareAsk = instruction;
+    renderCompareCards([currentCard(), ...cards]);
+    appendMessage(
+      'system',
+      escapeHtml(`대안 3안을 만들었습니다${instruction ? `: "${instruction}"` : ''} — 비교 창에서 채택할 수 있습니다.`)
+    );
+  } catch (e) {
+    renderCompareCards([currentCard()]);
+    compareGrid.insertAdjacentHTML(
+      'beforeend',
+      `<p class="alt-fail">${escapeHtml(e.message)}<br>키를 확인하거나, "기본 3안"으로 규칙 기반 대안을 볼 수 있습니다.</p>`
+    );
+  } finally {
+    compareRun.disabled = false;
+    compareRules.disabled = false;
+  }
+}
+
+// AI 없이 규칙으로 만드는 기본 3안(균형형·테라스형·포디움+타워)
+function showRuleAlternatives() {
+  const alts = buildAlternativeSpecs(currentSpec.site).map((a) => ({
+    key: a.key,
+    name: a.name,
+    sub: a.sub,
+    concept: a.intent,
+    pros: a.pros,
+    cons: a.cons,
+    spec: a.spec
+  }));
+  renderCompareCards([currentCard(), ...alts]);
+}
+
+function openCompare() {
+  if (!currentSpec) return;
+  compareOverlay.hidden = false;
+  compareInput.value = lastCompareAsk;
+  renderCompareCards([currentCard()]);
+  compareInput.focus();
+  requestAlternatives(compareInput.value.trim());
+}
+
+function disposeCompareViews() {
   compareViews.forEach((v) => {
     v.controls.dispose();
     v.renderer.dispose();
     v.renderer.forceContextLoss();
   });
   compareViews = [];
+}
+
+compareAsk.addEventListener('submit', (e) => {
+  e.preventDefault();
+  requestAlternatives(compareInput.value.trim());
+});
+compareRules.addEventListener('click', () => showRuleAlternatives());
+
+function closeCompare() {
+  disposeCompareViews();
   compareGrid.innerHTML = '';
   compareOverlay.hidden = true;
   compareBtn.focus();
@@ -2125,8 +2260,25 @@ function canEditFloors() {
 
 function selectFloor(level) {
   if (level != null && !canEditFloors()) return;
+  if (level !== selectedLevel) faceEditLevel = null; // 다른 층을 고르면 면 수정은 꺼진다
   selectedLevel = level;
   renderSpec(currentSpec, null, false, { keepCamera: true });
+  showEditHint();
+}
+
+// 3D 안내 한 줄 — 도구 창 대신 지금 할 수 있는 조작만 알려 준다.
+function showEditHint() {
+  if (!editHint) return;
+  if (!canEditFloors() || selectedLevel == null) {
+    editHint.hidden = true;
+    return;
+  }
+  const label = floorLabel(selectedLevel);
+  editHint.innerHTML =
+    faceEditLevel === selectedLevel
+      ? `<b>${label}</b> 면 수정 중 — 옆면을 끌면 폭·깊이, 윗면은 층고. 화살표로 이동. Esc로 해제`
+      : `<b>${label}</b> 선택됨 — 화살표로 이동, <b>더블클릭</b>하면 면을 수정할 수 있습니다`;
+  editHint.hidden = false;
 }
 
 function updateFloorEditor(spec) {
@@ -2240,6 +2392,69 @@ scene.add(faceHighlight);
 
 let drag = null; // 면을 끄는 중: { level, axis, localNormal, worldNormal, start, plane, orig, patch, pointerId }
 let downAt = null; // 캔버스를 누른 위치(클릭인지 시점 회전인지 구분)
+// ---- 검볼(라이노식 이동 화살표) — 선택한 층을 동·서·남·북으로 옮긴다 ----
+
+function makeArrow(dir, color) {
+  const arrow = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1, 10), mat);
+  shaft.position.y = 0.5;
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.1, 12), mat);
+  head.position.y = 1.55;
+  // 집기 쉬우라고 보이지 않는 굵은 기둥을 덧댄다(얇은 화살표를 정확히 찍지 않아도 잡힌다)
+  const grab = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 2.2, 8), new THREE.MeshBasicMaterial({ visible: false }));
+  grab.position.y = 1.1;
+  arrow.add(shaft, head, grab);
+  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  arrow.userData.dir = dir.clone();
+  arrow.userData.axis = Math.abs(dir.x) > 0.5 ? 'x' : 'z';
+  arrow.userData.sign = dir.x + dir.z > 0 ? 1 : -1;
+  arrow.renderOrder = 6;
+  arrow.traverse((o) => {
+    o.renderOrder = 6;
+    o.userData.gizmo = arrow;
+  });
+  return arrow;
+}
+
+function ensureGizmo() {
+  if (gizmoGroup) return gizmoGroup;
+  gizmoGroup = new THREE.Group();
+  gizmoGroup.visible = false;
+  [
+    [new THREE.Vector3(1, 0, 0), 0xe2604a],
+    [new THREE.Vector3(-1, 0, 0), 0xe2604a],
+    [new THREE.Vector3(0, 0, 1), 0x57c2d6],
+    [new THREE.Vector3(0, 0, -1), 0x57c2d6]
+  ].forEach(([dir, color]) => gizmoGroup.add(makeArrow(dir, color)));
+  scene.add(gizmoGroup);
+  return gizmoGroup;
+}
+
+// 선택한 층의 중심에 검볼을 놓는다. 크기는 층 크기에 맞춰 조금씩 키운다.
+function updateGizmo(spec = currentSpec) {
+  const f = selectedLevel != null ? spec.floors.find((x) => x.level === selectedLevel) : null;
+  if (!f) {
+    if (gizmoGroup) gizmoGroup.visible = false;
+    return;
+  }
+  ensureGizmo();
+  const { width, depth } = floorSize(f);
+  const center = f.shape ? polyCentroid(f.shape) : [f.offsetX || 0, f.offsetZ || 0];
+  let y = 0;
+  stackFloors(spec.floors, (x, centerY) => {
+    if (x.level === f.level) y = centerY;
+  });
+  const s = clamp(Math.max(width, depth) * 0.12, 0.9, 4);
+  gizmoGroup.position.set(center[0], y, center[1]);
+  gizmoGroup.scale.setScalar(s);
+  // 화살표는 층 바깥쪽에서 시작하도록 방향만큼 밀어낸다(매스에 가려지지 않게).
+  gizmoGroup.children.forEach((arrow) => {
+    const reach = (arrow.userData.axis === 'x' ? width : depth) / 2 / s + 0.4;
+    arrow.position.copy(arrow.userData.dir).multiplyScalar(reach);
+  });
+  gizmoGroup.visible = true;
+}
 
 function setRay(ev) {
   // 방금 다시 그린 매스나 막 움직인 카메라는 다음 렌더 프레임 전까지 월드 행렬이 옛값이므로 먼저 갱신한다.
@@ -2257,22 +2472,52 @@ function pickFloor(ev) {
 }
 
 // 면의 로컬 법선 → 바뀌는 값. 아랫면은 아래층과 맞닿아 있어 밀고 당기기 대상에서 뺀다.
-function faceAxis(n) {
+// 면의 법선 → 바뀌는 값. 다각형 층은 변이 비스듬해 법선이 축과 딱 맞지 않으므로 가장 가까운 축으로 본다.
+// (한 변의 삼각형 조각 하나가 아니라 그 방향의 "면 전체"를 잡게 하려는 것)
+function faceAxis(n, isPolygon) {
+  if (n.y > 0.5) return 'height';
+  if (n.y < -0.5) return null; // 아랫면은 아래층과 맞닿아 있어 제외
+  if (isPolygon) return Math.abs(n.x) >= Math.abs(n.z) ? 'width' : 'depth';
   if (Math.abs(n.x) > 0.5) return 'width';
   if (Math.abs(n.z) > 0.5) return 'depth';
-  if (n.y > 0.5) return 'height';
   return null;
 }
 
-// 선택한 면 위에 반투명 청록 판을 겹쳐 "끌 수 있는 면"을 보여준다.
-function placeHighlight(mesh, n) {
-  const axis = faceAxis(n);
+// 끌 수 있는 면을 반투명 청록 판으로 덮는다.
+// 다각형 층은 그 방향의 외곽(외접 사각형 한 면) 전체를 덮어, 조각난 변이 아니라 면 전체를 잡는 느낌을 준다.
+function placeHighlight(mesh, n, floor) {
+  const isPoly = !!floor?.shape;
+  const axis = faceAxis(n, isPoly);
   if (!axis) {
     faceHighlight.visible = false;
     return null;
   }
-  const p = mesh.geometry.parameters;
   mesh.updateMatrixWorld();
+
+  if (isPoly) {
+    const b = polyBBox(floor.shape);
+    const sign = axis === 'width' ? Math.sign(n.x) || 1 : axis === 'depth' ? Math.sign(n.z) || 1 : 1;
+    const cx = (b.minX + b.maxX) / 2;
+    const cz = (b.minZ + b.maxZ) / 2;
+    const y = mesh.position.y;
+    if (axis === 'height') {
+      faceHighlight.position.set(cx, y + floor.height / 2 + 0.05, cz);
+      faceHighlight.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));
+      faceHighlight.scale.set(b.maxX - b.minX, b.maxZ - b.minZ, 1);
+    } else if (axis === 'width') {
+      faceHighlight.position.set(sign > 0 ? b.maxX + 0.05 : b.minX - 0.05, y, cz);
+      faceHighlight.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(sign, 0, 0));
+      faceHighlight.scale.set(b.maxZ - b.minZ, floor.height, 1);
+    } else {
+      faceHighlight.position.set(cx, y, sign > 0 ? b.maxZ + 0.05 : b.minZ - 0.05);
+      faceHighlight.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, sign));
+      faceHighlight.scale.set(b.maxX - b.minX, floor.height, 1);
+    }
+    faceHighlight.visible = true;
+    return axis;
+  }
+
+  const p = mesh.geometry.parameters;
   const local = new THREE.Vector3((n.x * p.width) / 2, (n.y * p.height) / 2, (n.z * p.depth) / 2).addScaledVector(n, 0.03);
   faceHighlight.position.copy(mesh.localToWorld(local));
   const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n.clone().normalize());
@@ -2291,13 +2536,24 @@ viewport.addEventListener(
     if (ev.button !== 0 || ev.target !== renderer.domElement || !canEditFloors()) return;
     downAt = { x: ev.clientX, y: ev.clientY };
     if (selectedLevel == null) return;
+
+    // 1순위: 검볼 화살표를 잡았는가 (층 이동)
+    const arrow = pickGizmo(ev);
+    if (arrow) {
+      ev.stopPropagation();
+      startArrowDrag(ev, arrow);
+      return;
+    }
+
+    // 2순위: 더블클릭으로 "면 수정"을 켠 층의 면을 잡았는가
+    if (faceEditLevel !== selectedLevel) return;
     const hit = pickFloor(ev);
     if (!hit || hit.object.userData.level !== selectedLevel) return;
-    const axis = faceAxis(hit.face.normal);
+    const floor = currentSpec.floors.find((f) => f.level === selectedLevel);
+    const axis = faceAxis(hit.face.normal, !!floor.shape);
     if (!axis) return;
 
     ev.stopPropagation();
-    const floor = currentSpec.floors.find((f) => f.level === selectedLevel);
     const localNormal = hit.face.normal.clone();
     const worldNormal = localNormal.clone().applyQuaternion(hit.object.quaternion).normalize();
     // 끄는 방향(면 법선)을 포함하면서 화면을 가장 정면으로 보는 평면 위에서 마우스를 추적한다.
@@ -2332,21 +2588,106 @@ viewport.addEventListener('pointermove', (ev) => {
     updateDrag(ev);
     return;
   }
-  viewport.classList.remove('can-pull', 'can-pick');
+  viewport.classList.remove('can-pull', 'can-pick', 'can-move');
   if (ev.target !== renderer.domElement || ev.buttons || !canEditFloors()) {
     faceHighlight.visible = false;
     return;
   }
+  if (pickGizmo(ev)) {
+    faceHighlight.visible = false;
+    viewport.classList.add('can-move'); // 이동 화살표 위
+    return;
+  }
   const hit = pickFloor(ev);
-  if (hit && hit.object.userData.level === selectedLevel) {
-    viewport.classList.toggle('can-pull', !!placeHighlight(hit.object, hit.face.normal));
+  const floor = hit ? currentSpec.floors.find((x) => x.level === hit.object.userData.level) : null;
+  if (hit && hit.object.userData.level === selectedLevel && faceEditLevel === selectedLevel) {
+    viewport.classList.toggle('can-pull', !!placeHighlight(hit.object, hit.face.normal, floor));
   } else {
     faceHighlight.visible = false;
     if (hit) viewport.classList.add('can-pick');
   }
 });
 
+// 검볼 화살표 집기 — 화살표(보이지 않는 굵은 기둥 포함)만 대상으로 한다.
+function pickGizmo(ev) {
+  if (!gizmoGroup?.visible || selectedLevel == null) return null;
+  setRay(ev);
+  gizmoGroup.updateMatrixWorld(true);
+  const hit = raycaster.intersectObjects(gizmoGroup.children, true)[0];
+  return hit ? hit.object.userData.gizmo || hit.object.parent : null;
+}
+
+// 화살표를 잡는 순간의 "손잡은 위치"를 기억해 두고, 이후에는 그 차이만큼만 옮긴다.
+// (잡자마자 층이 커서 위치로 튀는 것을 막는다)
+function startArrowDrag(ev, arrow) {
+  const floor = currentSpec.floors.find((f) => f.level === selectedLevel);
+  if (!floor) return;
+  const axis = arrow.userData.axis; // 'x' | 'z'
+  const axisVec = axis === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1);
+  const camDir = camera.getWorldDirection(new THREE.Vector3());
+  const planeNormal = camDir.clone().addScaledVector(axisVec, -camDir.dot(axisVec));
+  if (planeNormal.lengthSq() < 1e-6) planeNormal.set(0, 1, 0);
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal.normalize(), gizmoGroup.position.clone());
+
+  setRay(ev);
+  const grab = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+  if (!grab) return;
+
+  const center = floor.shape ? polyCentroid(floor.shape) : [floor.offsetX || 0, floor.offsetZ || 0];
+  drag = {
+    kind: 'move',
+    level: selectedLevel,
+    axis,
+    axisVec,
+    plane,
+    grabValue: grab.dot(axisVec), // 잡은 순간의 축 좌표
+    startCenter: center,
+    orig: { ...floor },
+    patch: null,
+    pointerId: ev.pointerId
+  };
+  downAt = null;
+  viewport.classList.add('pulling');
+  try {
+    viewport.setPointerCapture(ev.pointerId);
+  } catch (e) {
+    // 캡처 불가 포인터는 일반 이벤트로 추적
+  }
+  prevValues = computeValues(currentSpec.site, currentSpec.floors);
+}
+
+function updateArrowDrag(ev) {
+  setRay(ev);
+  const p = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
+  if (!p) return;
+  const step = ev.shiftKey ? 1 : 0.1;
+  const delta = Math.round((p.dot(drag.axisVec) - drag.grabValue) / step) * step; // 잡은 지점 기준 상대 이동
+  const o = drag.orig;
+  const dx = drag.axis === 'x' ? delta : 0;
+  const dz = drag.axis === 'z' ? delta : 0;
+  drag.patch = o.shape
+    ? { shape: translatePoly(o.shape, dx, dz) }
+    : { offsetX: round2((o.offsetX || 0) + dx), offsetZ: round2((o.offsetZ || 0) + dz) };
+
+  const floors = currentSpec.floors.map((f) => (f.level === drag.level ? { ...f, ...drag.patch } : f));
+  renderSpec({ ...currentSpec, floors }, null, true, { keepCamera: true });
+
+  const moved = drag.axis === 'x' ? dx : dz;
+  const name = drag.axis === 'x' ? '동서(X)' : '남북(Z)';
+  const target = drag.startCenter[drag.axis === 'x' ? 0 : 1] + moved;
+  dragLabel.innerHTML =
+    `${name} 이동 <b>${signed(moved, 1, 'm')}</b> <span class="${moved >= 0 ? 'plus' : 'minus'}">(중심 ${fmt(target, 1)}m)</span>`;
+  const vp = viewport.getBoundingClientRect();
+  dragLabel.style.left = `${ev.clientX - vp.left}px`;
+  dragLabel.style.top = `${ev.clientY - vp.top}px`;
+  dragLabel.hidden = false;
+}
+
 function updateDrag(ev) {
+  if (drag.kind === 'move') {
+    updateArrowDrag(ev);
+    return;
+  }
   setRay(ev);
   const p = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
   if (!p) return;
@@ -2403,7 +2744,7 @@ function updateDrag(ev) {
 function finishDrag(commit) {
   const d = drag;
   drag = null;
-  viewport.classList.remove('pulling');
+  viewport.classList.remove('pulling', 'can-move');
   dragLabel.hidden = true;
   try {
     viewport.releasePointerCapture(d.pointerId);
@@ -2413,6 +2754,21 @@ function finishDrag(commit) {
   if (commit && d.patch) commitFloorEdit(d.level, d.patch);
   else renderSpec(currentSpec, null, false, { keepCamera: true });
 }
+
+// 한 번 클릭: 층 전체 선택 / 더블클릭: 그 층의 "면 수정" 켜기
+viewport.addEventListener('dblclick', (ev) => {
+  if (ev.target !== renderer.domElement || !canEditFloors()) return;
+  const hit = pickFloor(ev);
+  if (!hit) {
+    faceEditLevel = null;
+    showEditHint();
+    return;
+  }
+  const level = hit.object.userData.level;
+  if (level !== selectedLevel) selectFloor(level);
+  faceEditLevel = level;
+  showEditHint();
+});
 
 viewport.addEventListener('pointerup', (ev) => {
   if (drag) {
@@ -2434,7 +2790,11 @@ viewport.addEventListener('pointercancel', () => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !compareOverlay.hidden) return;
   if (drag) finishDrag(false);
-  else if (selectedLevel != null) selectFloor(null);
+  else if (faceEditLevel != null) {
+    faceEditLevel = null;
+    faceHighlight.visible = false;
+    showEditHint();
+  } else if (selectedLevel != null) selectFloor(null);
 });
 
 // ---- 대지 찾기: 주소 → 필지 경계 + 토지특성 + 건축물대장 + 주변 건물 + 지적도 미니맵 ----
@@ -2503,9 +2863,12 @@ function renderMinimap(data) {
   const p = data.parcel;
   if (!p?.boundary?.length) {
     minimap.hidden = true;
+    if (mmEmpty) mmEmpty.hidden = false;
     return;
   }
   minimap.hidden = false;
+  if (mmEmpty) mmEmpty.hidden = true;
+  if (mmTitle) mmTitle.textContent = p.address || '선택한 대지';
   const lons = p.boundary.map((c) => c[0]);
   const lats = p.boundary.map((c) => c[1]);
   const pad = Math.max((Math.max(...lons) - Math.min(...lons)) * 1.6, (Math.max(...lats) - Math.min(...lats)) * 1.6, 0.0012);
