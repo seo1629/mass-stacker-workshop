@@ -6,6 +6,7 @@ import {
   buildPolygonFloors, polyArea, polyBBox, polyCentroid, scalePoly, translatePoly, rotatePoly,
   setbackAt, SUNLIGHT_BASE
 } from './mass-poly.js';
+import { buildExportScene, exportGLB, exportDAE, download, stamp, safeName } from './export.js';
 
 const el = (id) => document.getElementById(id);
 const providerSelect = el('provider');
@@ -55,6 +56,12 @@ const feWarn = el('feWarn');
 const feClose = el('feClose');
 const dragLabel = el('dragLabel');
 const editHint = el('editHint');
+const exportJsonBtn = el('exportJsonBtn');
+const exportDaeBtn = el('exportDaeBtn');
+const exportGlbBtn = el('exportGlbBtn');
+const expNeighbors = el('expNeighbors');
+const expBoundary = el('expBoundary');
+const exportNote = el('exportNote');
 const FE_FIELDS = ['width', 'depth', 'height', 'offsetX', 'offsetZ'];
 const landQuery = el('landQuery');
 const landSearchBtn = el('landSearchBtn');
@@ -2853,6 +2860,169 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !compareOverlay.hidden) return;
   if (drag) finishDrag(false);
   else if (faceEditLevel != null) setFaceEdit(null); else if (selectedLevel != null) selectFloor(null);
+});
+
+// ---- 내보내기: 설계 JSON(제안서용) · 3D 모델(DAE / GLB) ----
+// 층별 상세와 면적·높이, 어떤 자료에서 왔는지(출처)와 지금까지의 설계 이력까지 한 파일에 담는다.
+function exportSummary(spec) {
+  const v = computeValues(spec.site, spec.floors);
+  return {
+    buildingArea: +v.buildArea.toFixed(2),
+    coverageRatioUsed: +v.bcr.toFixed(2),
+    grossFloorArea: +v.gfa.toFixed(2),
+    farUsed: +v.far.toFixed(2),
+    height: +v.height.toFixed(2),
+    floorsAbove: v.floorCount,
+    floorsBelow: v.basementCount,
+    openArea: +(v.siteArea - v.buildArea).toFixed(2)
+  };
+}
+
+function floorDetail(f) {
+  const { width, depth } = floorSize(f);
+  const [cx, cz] = f.shape ? polyCentroid(f.shape) : [f.offsetX || 0, f.offsetZ || 0];
+  return {
+    level: f.level,
+    label: floorLabel(f.level),
+    use: f.use || '',
+    floorArea: +plateArea(f).toFixed(2),
+    floorHeight: +f.height.toFixed(2),
+    boundingWidth: width,
+    boundingDepth: depth,
+    centerX: +cx.toFixed(2),
+    centerZ: +cz.toFixed(2),
+    rotationDeg: f.shape ? 0 : f.rotationDeg || 0,
+    shapeType: f.shape ? 'polygon' : 'box',
+    shape: f.shape || null
+  };
+}
+
+function buildExportJson() {
+  const site = currentSpec.site;
+  const stack = [];
+  stackFloors(currentSpec.floors, (f, centerY) => stack.push({ level: f.level, baseHeight: +(centerY - f.height / 2).toFixed(2), topHeight: +(centerY + f.height / 2).toFixed(2) }));
+  const heightByLevel = Object.fromEntries(stack.map((s) => [s.level, s]));
+
+  return {
+    format: 'mass-stacker/design',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    rev: rev,
+    site: {
+      name: site.name || '',
+      address: site.address || '',
+      pnu: site.pnu || '',
+      zoning: site.zoning || '',
+      siteArea: site.siteArea,
+      coverageRatio: site.coverageRatio,
+      farRatio: site.farRatio,
+      maxFloors: site.maxFloors ?? null,
+      maxHeight: site.maxHeight ?? null,
+      floorHeight: site.floorHeight ?? null,
+      setback: site.setback ?? null,
+      sunlightRule: site.sunRule === 'off' ? '적용 안 함' : `정북 일조 ${SUNLIGHT_BASE[site.sunRule || 'after']}m 기준`,
+      boundaryLocalMeters: site.boundary || null,
+      boundaryLonLat: landData?.parcel?.boundary || null,
+      originLonLat: landData?.origin || null,
+      coordinateNote: 'boundaryLocalMeters와 층 좌표는 필지 중심을 원점으로 한 미터 좌표(x=동쪽+, z=남쪽+)입니다.'
+    },
+    derived: currentSpec.derived,
+    summary: exportSummary(currentSpec),
+    floors: currentSpec.floors
+      .slice()
+      .sort((a, b) => b.level - a.level)
+      .map((f) => ({ ...floorDetail(f), ...heightByLevel[f.level] })),
+    limitChecks: checkLimits(site, currentSpec.derived, currentSpec.floors).map((w) => ({
+      item: w.label, value: w.value, limit: w.limit, excess: w.excess, suggestion: w.fix
+    })),
+    sources: landData
+      ? {
+          lookup: Object.fromEntries(
+            Object.entries(landData.sources || {}).map(([k, v]) => [k, { label: SOURCE_LABEL[k] || k, ok: v.ok, note: v.ok ? v.note : `${v.reason}${v.detail ? ` — ${v.detail}` : ''}` }])
+          ),
+          landCharacteristics: landData.land || null,
+          existingBuildings: landData.buildings || [],
+          neighborBuildingCount: landData.neighbors?.length || 0,
+          assumptions: [
+            landData.zoneRatios ? `건폐율 ${landData.zoneRatios.bcr}% · 용적률 ${landData.zoneRatios.far}%는 용도지역(${landData.zoneRatios.zone}) 조례 상한을 가정한 값입니다(인허가 확인 아님).` : null,
+            '정북 인접대지경계선은 필지 최북단 변으로 근사했습니다.',
+            '대지안의 공지·건축선 후퇴·지구단위계획은 반영하지 않았습니다.'
+          ].filter(Boolean)
+        }
+      : { lookup: null, assumptions: ['조회한 실제 대지 없이 입력값으로 만든 설계입니다.'] },
+    history: history.map((h, i) => ({ step: i + 1, rev: h.rev, ...exportSummary(h.spec) })),
+    log: chatEntries.map((m) => ({
+      who: m.who || m.kind,
+      text: String(m.html || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    }))
+  };
+}
+
+function exportFileName(ext) {
+  const base = safeName(currentSpec?.site?.name || '대지');
+  return `mass-stacker_${base}_REV${String(rev).padStart(2, '0')}_${stamp()}.${ext}`;
+}
+
+function setExportNote(text, kind) {
+  exportNote.textContent = text;
+  exportNote.className = `meta${kind ? ` ${kind}` : ''}`;
+}
+
+function massMeshesForExport() {
+  const meshes = massGroup.children.filter((o) => o.isMesh && o.userData.level != null);
+  return {
+    massMeshes: meshes,
+    floorLabels: meshes.map((m) => floorLabel(m.userData.level))
+  };
+}
+
+function makeExportScene() {
+  const { massMeshes, floorLabels } = massMeshesForExport();
+  massGroup.updateMatrixWorld(true);
+  neighborGroup?.updateMatrixWorld(true);
+  return buildExportScene({
+    massMeshes,
+    floorLabels,
+    neighborGroup,
+    boundary: currentSpec.site.boundary,
+    includeNeighbors: expNeighbors.checked,
+    includeBoundary: expBoundary.checked
+  });
+}
+
+exportJsonBtn.addEventListener('click', () => {
+  if (!currentSpec) return;
+  try {
+    const data = buildExportJson();
+    download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), exportFileName('json'));
+    setExportNote(`설계 JSON을 내보냈습니다 (층 ${data.floors.length}개 · 이력 ${data.history.length}단계).`, 'ok');
+  } catch (e) {
+    setExportNote(`JSON 내보내기 실패: ${e.message}`, 'bad');
+  }
+});
+
+exportDaeBtn.addEventListener('click', () => {
+  if (!currentSpec) return;
+  try {
+    const scene = makeExportScene();
+    const { xml, meshCount, triangleCount } = exportDAE(scene);
+    download(new Blob([xml], { type: 'model/vnd.collada+xml' }), exportFileName('dae'));
+    setExportNote(`DAE를 내보냈습니다 (메시 ${meshCount}개 · 삼각형 ${triangleCount.toLocaleString('ko-KR')}개).`, 'ok');
+  } catch (e) {
+    setExportNote(`DAE 내보내기 실패: ${e.message}`, 'bad');
+  }
+});
+
+exportGlbBtn.addEventListener('click', async () => {
+  if (!currentSpec) return;
+  setExportNote('GLB를 만드는 중...');
+  try {
+    const blob = await exportGLB(makeExportScene());
+    download(blob, exportFileName('glb'));
+    setExportNote(`GLB를 내보냈습니다 (${(blob.size / 1024).toFixed(0)}KB).`, 'ok');
+  } catch (e) {
+    setExportNote(`GLB 내보내기 실패: ${e.message}`, 'bad');
+  }
 });
 
 // ---- 대지 찾기: 주소 → 필지 경계 + 토지특성 + 건축물대장 + 주변 건물 + 지적도 미니맵 ----

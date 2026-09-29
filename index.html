@@ -83,6 +83,21 @@
       </section>
 
 
+      <section class="block">
+        <span class="tag">04 — 내보내기</span>
+        <button id="exportJsonBtn" class="btn" type="button">설계 JSON 내보내기</button>
+        <p class="meta">설계 조건 · 대지 정보 · 층별 상세 · 면적/높이 · 자료 출처 · 설계 이력이 담깁니다.</p>
+        <div class="export-opts">
+          <label><input type="checkbox" id="expNeighbors" checked /> 주변 건물 포함</label>
+          <label><input type="checkbox" id="expBoundary" checked /> 지적 경계 포함</label>
+        </div>
+        <div class="export-row">
+          <button id="exportDaeBtn" class="btn" type="button">DAE 내보내기</button>
+          <button id="exportGlbBtn" class="btn" type="button">GLB 내보내기</button>
+        </div>
+        <p class="meta" id="exportNote">3D는 현재 화면의 매스를 그대로 내보냅니다.</p>
+      </section>
+
       <details class="block settings-block">
         <summary><span class="tag">설정 — 모델 · API 키</span></summary>
         <select id="provider" class="input">

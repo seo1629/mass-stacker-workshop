@@ -860,3 +860,11 @@ html, body {
   cursor: pointer;
 }
 .edit-hint button:hover { background: rgba(87, 194, 214, .14); }
+
+/* ---------- 내보내기 ---------- */
+.export-opts { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--chalk-dim); }
+.export-opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.export-row { display: flex; gap: 6px; }
+.export-row .btn { flex: 1; }
+#exportNote.ok { color: var(--cyan); }
+#exportNote.bad { color: var(--pencil); }
